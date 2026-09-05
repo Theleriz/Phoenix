@@ -39,7 +39,9 @@ async def listen(address: str, seconds: float) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Diagnostic raw notification listener; not clinical use.")
+    parser = argparse.ArgumentParser(
+        description="Diagnostic raw notification listener; not clinical use."
+    )
     parser.add_argument("address", help="BLE MAC address to listen to")
     parser.add_argument("--seconds", type=float, default=20, help="Listen duration; default: 20")
     args = parser.parse_args()

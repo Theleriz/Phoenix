@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import struct
+from dataclasses import dataclass
 
 FRAME_HEADER = b"\x55\x61"
 FRAME_LENGTH = 11
