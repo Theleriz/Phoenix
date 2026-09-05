@@ -23,7 +23,9 @@ ROLES = {"thigh", "shank", "foot"}
 def parse_sensor(value: str) -> tuple[str, str]:
     role, separator, address = value.partition("=")
     if separator != "=" or role.lower() not in ROLES or not address:
-        raise argparse.ArgumentTypeError("Use --sensor thigh=ADDRESS, shank=ADDRESS or foot=ADDRESS")
+        raise argparse.ArgumentTypeError(
+            "Use --sensor thigh=ADDRESS, shank=ADDRESS or foot=ADDRESS"
+        )
     return role.lower(), address
 
 
@@ -64,12 +66,15 @@ async def listen(sensors: dict[str, str], seconds: float) -> Counter[str]:
 
     for role in sensors:
         sample = last_payload.get(role, "(none)")
-        print(f"{role}: {counts[role]} notifications, last payload {len(sample) // 2 if sample != '(none)' else 0} bytes: {sample}")
+        byte_count = len(sample) // 2 if sample != "(none)" else 0
+        print(f"{role}: {counts[role]} notifications, last payload {byte_count} bytes: {sample}")
     return counts
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Diagnostic multi-sensor raw listener; not clinical use.")
+    parser = argparse.ArgumentParser(
+        description="Diagnostic multi-sensor raw listener; not clinical use."
+    )
     parser.add_argument("--sensor", action="append", type=parse_sensor, required=True)
     parser.add_argument("--seconds", type=float, default=20, help="Listen duration; default: 20")
     args = parser.parse_args()

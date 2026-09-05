@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from collections import Counter
 from pathlib import Path
-import sys
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
@@ -37,11 +37,15 @@ ROLES = {"thigh": SensorRole.THIGH, "shank": SensorRole.SHANK, "foot": SensorRol
 def parse_sensor(value: str) -> tuple[str, str]:
     role, separator, address = value.partition("=")
     if separator != "=" or role.lower() not in ROLES or not address:
-        raise argparse.ArgumentTypeError("Use --sensor thigh=ADDRESS, shank=ADDRESS or foot=ADDRESS")
+        raise argparse.ArgumentTypeError(
+            "Use --sensor thigh=ADDRESS, shank=ADDRESS or foot=ADDRESS"
+        )
     return role.lower(), address
 
 
-async def capture(sensors: dict[str, str], output: Path, seconds: float, session_id: str) -> Counter[str]:
+async def capture(
+    sensors: dict[str, str], output: Path, seconds: float, session_id: str
+) -> Counter[str]:
     try:
         from bleak import BleakClient
     except ImportError as error:
@@ -102,14 +106,19 @@ async def capture(sensors: dict[str, str], output: Path, seconds: float, session
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Diagnostic WT901BLE68 angles capture; not clinical use.")
+    parser = argparse.ArgumentParser(
+        description="Diagnostic WT901BLE68 angles capture; not clinical use."
+    )
     parser.add_argument("--sensor", action="append", type=parse_sensor, required=True)
     parser.add_argument("--seconds", type=float, default=60, help="Capture duration; default: 60")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--session-id",
         default="hardware-diagnostic-session",
-        help="Non-clinical session label stored in each record; default: hardware-diagnostic-session",
+        help=(
+            "Non-clinical session label stored in each record; "
+            "default: hardware-diagnostic-session"
+        ),
     )
     args = parser.parse_args()
     sensors = dict(args.sensor)
