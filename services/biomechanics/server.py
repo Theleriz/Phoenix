@@ -7,7 +7,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
+from orientation import calibrated_relative_orientation, from_euler_degrees
 from preprocessing import preprocess_transport_events
+from shadow import shadow_infer
 
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
 
@@ -29,9 +31,18 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/preprocess":
-            self.send_error(HTTPStatus.NOT_FOUND)
+        if self.path == "/v1/preprocess":
+            self._preprocess()
             return
+        if self.path == "/v1/relative-orientation":
+            self._relative_orientation()
+            return
+        if self.path == "/v1/shadow-infer":
+            self._shadow_infer()
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _preprocess(self) -> None:
         try:
             request = self._read_json()
             events = request["events"]
@@ -59,6 +70,56 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def _relative_orientation(self) -> None:
+        try:
+            request = self._read_json()
+            calibration = request["calibration"]
+            if not isinstance(calibration, dict):
+                raise ValueError("calibration must be an object")
+            result = calibrated_relative_orientation(
+                proximal_current=_quaternion_from_euler(request["proximal_euler_degrees"]),
+                distal_current=_quaternion_from_euler(request["distal_euler_degrees"]),
+                proximal_baseline=_quaternion_from_euler(
+                    calibration["proximal_baseline_euler_degrees"]
+                ),
+                distal_baseline=_quaternion_from_euler(
+                    calibration["distal_baseline_euler_degrees"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"detail": str(error)})
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "relative_orientation_quaternion": [result.w, result.x, result.y, result.z],
+                "clinical_scoring": False,
+                "limitations": [
+                    "Generic relative orientation only; this is not a knee angle "
+                    "or clinical metric."
+                ],
+            },
+        )
+
+    def _shadow_infer(self) -> None:
+        try:
+            request = self._read_json()
+            signal_quality = request["signal_quality"]
+            feature_versions = request["feature_versions"]
+            if not isinstance(signal_quality, dict) or not isinstance(feature_versions, list):
+                raise ValueError(
+                    "signal_quality must be an object and feature_versions must be a list"
+                )
+            prediction = shadow_infer(
+                signal_quality=signal_quality,
+                model_version=str(request["model_version"]),
+                feature_versions=feature_versions,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"detail": str(error)})
+            return
+        self._send_json(HTTPStatus.OK, prediction.as_dict())
+
     def _read_json(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length < 1 or content_length > MAX_REQUEST_BYTES:
@@ -75,6 +136,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(response)))
         self.end_headers()
         self.wfile.write(response)
+
+
+def _quaternion_from_euler(value: Any):
+    if not isinstance(value, list | tuple) or len(value) != 3:
+        raise ValueError("Euler orientation must have exactly three values")
+    roll, pitch, yaw = (float(component) for component in value)
+    return from_euler_degrees(roll, pitch, yaw)
 
 
 def build_server(host: str = "0.0.0.0", port: int = 8080) -> HTTPServer:

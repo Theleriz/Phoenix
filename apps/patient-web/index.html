@@ -11,6 +11,12 @@
       .notice { background: #fff5d6; border-left: .35rem solid #b7791f; }
       .tag { background: #e0ebff; border-radius: 999px; display: inline-block; margin-right: .4rem; padding: .2rem .65rem; }
       button { background: #135fc2; border: 0; border-radius: .6rem; color: #fff; font: inherit; padding: .7rem 1rem; }
+      button:disabled { background: #708096; cursor: not-allowed; }
+      .sensor-list { list-style: none; margin: .75rem 0 0; padding: 0; }
+      .sensor-list li { border-top: 1px solid #dbe3ef; display: flex; justify-content: space-between; padding: .65rem 0; }
+      .status { border-radius: 999px; font-size: .9rem; padding: .1rem .55rem; }
+      .status-waiting { background: #fff0c8; color: #704a00; }
+      .muted { color: #536579; font-size: .95rem; }
     </style>
   </head>
   <body>
@@ -28,8 +34,30 @@
           <p>Протокол: ${data.protocol.name}</p>
           <p>${replay.frame_count} replay-кадров · <span class="tag">${replay.origin}</span><span class="tag">${replay.validation_status}</span></p>
           <p>Сенсоры: ${replay.sensor_roles.join(', ')}</p>
-          <button type="button" disabled aria-disabled="true">Начать (недоступно в демо)</button>
+          <button type="button" disabled aria-disabled="true">Начать упражнение</button>
+          <p class="muted">Старт недоступен: это synthetic replay, а не измерение пациента.</p>
         `;
+        const setup = document.createElement('section');
+        setup.className = 'card';
+        setup.innerHTML = '<h2>Подключение датчиков</h2><p>Перед упражнением закрепите датчики в соответствии с утверждённой инструкцией и дождитесь технической проверки.</p>';
+        const sensors = document.createElement('ul');
+        sensors.className = 'sensor-list';
+        replay.sensor_roles.forEach(role => {
+          const item = document.createElement('li');
+          const name = document.createElement('span');
+          name.textContent = role.toUpperCase();
+          const state = document.createElement('span');
+          state.className = 'status status-waiting';
+          state.textContent = 'Ожидает проверки';
+          item.append(name, state);
+          sensors.append(item);
+        });
+        setup.append(sensors);
+        const quality = document.createElement('p');
+        quality.className = 'muted';
+        quality.textContent = 'Signal Quality и калибровка должны быть подтверждены до начала упражнения.';
+        setup.append(quality);
+        document.querySelector('main').append(setup);
         const notice = document.createElement('section');
         notice.className = 'card notice';
         notice.textContent = data.safety_notice;

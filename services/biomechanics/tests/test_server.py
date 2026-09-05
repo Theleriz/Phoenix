@@ -68,3 +68,44 @@ class BiomechanicsHttpTests(unittest.TestCase):
         self.assertTrue(payload["allowed"])
         self.assertFalse(payload["clinical_scoring"])
         self.assertEqual(payload["frames"][1]["sensors"]["foot"]["gz"], 1.0)
+
+    def test_relative_orientation_requires_explicit_baselines(self) -> None:
+        request = {
+            "proximal_euler_degrees": [0, 0, 0],
+            "distal_euler_degrees": [0, 90, 0],
+            "calibration": {
+                "proximal_baseline_euler_degrees": [0, 0, 0],
+                "distal_baseline_euler_degrees": [0, 0, 0],
+            },
+        }
+        connection = HTTPConnection("127.0.0.1", self.port)
+        connection.request(
+            "POST",
+            "/v1/relative-orientation",
+            body=json.dumps(request),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        self.assertEqual(response.status, 200)
+        self.assertFalse(payload["clinical_scoring"])
+        self.assertAlmostEqual(payload["relative_orientation_quaternion"][2], 2**-0.5)
+
+    def test_shadow_endpoint_abstains_without_a_validated_model(self) -> None:
+        request = {
+            "signal_quality": {"scoring_permitted": True},
+            "model_version": "shadow-v1",
+            "feature_versions": ["preprocessing-v1"],
+        }
+        connection = HTTPConnection("127.0.0.1", self.port)
+        connection.request(
+            "POST",
+            "/v1/shadow-infer",
+            body=json.dumps(request),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["status"], "abstained")
+        self.assertFalse(payload["affects_score"])

@@ -12,6 +12,12 @@ validated calibration method.
 adapter's declared Euler orientation as research-only data. It requires an
 explicit orientation baseline for both sensors before it can produce a generic
 relative orientation. It does not infer anatomical axes or a knee angle.
+`POST /v1/relative-orientation` exposes this only when both explicit baselines
+are supplied.
+
+`POST /v1/shadow-infer` is the stage-9 shadow boundary. It currently returns a
+versioned abstention because no local model has passed validation; its output
+never affects score, feedback, or safety rules.
 
 Run its tests from the repository root:
 

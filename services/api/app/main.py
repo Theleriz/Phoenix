@@ -482,6 +482,49 @@ async def stream_gateway_packets(websocket: WebSocket, session_id: str) -> None:
         gateway_streams.disconnect(session_id, websocket)
 
 
+@app.get("/api/v1/rehab-sessions/{session_id}/signal-quality", tags=["signal-quality"])
+def get_signal_quality(session_id: str, identity: Identity) -> dict[str, object]:
+    """Return technical status only, with normal tenant and patient access checks."""
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT sq.result, sq.created_at, patient.user_id
+               FROM rehab_sessions session
+               JOIN episodes_of_care episode ON episode.id = session.episode_id
+               JOIN patients patient ON patient.id = episode.patient_id
+               LEFT JOIN LATERAL (
+                   SELECT result, created_at FROM signal_quality
+                   WHERE exercise_attempt_id IN (
+                       SELECT id FROM exercise_attempts WHERE rehab_session_id = session.id
+                   )
+                   ORDER BY created_at DESC LIMIT 1
+               ) sq ON TRUE
+               WHERE session.id = %s AND session.organization_id = %s""",
+            (session_id, str(identity["organization_id"])),
+        )
+        row = cursor.fetchone()
+    if row is None or not can_view_patient(
+        roles=frozenset(identity["roles"]),
+        patient_user_id=row[2],
+        user_id=str(identity["user_id"]),
+    ):
+        raise HTTPException(status_code=404, detail="Rehabilitation session not found")
+    if row[0] is None:
+        return {
+            "session_id": session_id,
+            "level": "INVALID",
+            "reasons": ["signal_quality_not_available"],
+            "scoring_permitted": False,
+            "clinical_scoring": False,
+        }
+    result = dict(row[0])
+    return {
+        "session_id": session_id,
+        "assessed_at": row[1],
+        "clinical_scoring": False,
+        **result,
+    }
+
+
 @app.get("/api/v1/demo", tags=["development"])
 def get_demo() -> dict[str, object]:
     """Expose only the seed-shaped synthetic fixture to the local demo pages."""
