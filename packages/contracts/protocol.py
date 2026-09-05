@@ -7,8 +7,9 @@ configuration.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 RESTRICTION_PRIORITY = (
     "individual_clinician",
@@ -91,7 +92,7 @@ def validate_prescription(configuration: Mapping[str, Any]) -> list[str]:
         if value is not None and (not isinstance(value, int) or value < 1):
             errors.append(f"{field} must be a positive integer or null")
     rom = configuration.get("target_rom_degrees")
-    if rom is not None and (not isinstance(rom, (int, float)) or not 0 <= rom <= 180):
+    if rom is not None and (not isinstance(rom, int | float) or not 0 <= rom <= 180):
         errors.append("target_rom_degrees must be between 0 and 180 or null")
     if configuration.get("approval_state", "draft") not in {"draft", "clinically_approved"}:
         errors.append("prescription approval_state must be draft or clinically_approved")

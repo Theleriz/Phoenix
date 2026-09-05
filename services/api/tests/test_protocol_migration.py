@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 MIGRATION = (
     Path(__file__).parents[1] / "migrations" / "versions" / "0004_protocol_engine.sql"
 ).read_text(encoding="utf-8")
