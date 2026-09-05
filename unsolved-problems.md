@@ -45,6 +45,13 @@
    являются engineering defaults. Они не валидированы для конкретной модели
    датчика или клинического использования.
 
+6. `apps/clinician-web` на момент фиксации — статическая HTML-страница с
+   единственным inline `<script>` (без `package.json`, сборки или `src/`),
+   что нарушает правило раздела 2 `IMPLEMENTATION_PLAN.md` об интерактивных
+   React + TypeScript UI. `apps/patient-web` этому правилу соответствует.
+   Статус закрывается переделкой `apps/clinician-web` в React + TypeScript
+   SPA по паттерну `apps/patient-web`.
+
 ## Что уже можно показать
 
 1. Synthetic three-sensor replay проходит gateway transport, API и durable
@@ -109,3 +116,21 @@
    с референсным измерением, экспертная разметка качества и фиксированный
    validation report. Prototype target latency для live feedback -- менее
    300-500 ms, но final threshold зависит от выбранного hardware.
+
+7. НТЗ §10.2 (IMU-02) рекомендует sampling 50-100 Hz, но единственное
+   подтверждённое владельцем проекта железо (WitMotion WT901BLE68, см.
+   `docs/imu/current-script-audit.md`) по BLE реально выдаёт только 10 или
+   20 Hz в зависимости от настройки прошивки -- на порядок меньше
+   рекомендации НТЗ. До bench-валидации на этой частоте нельзя закладывать
+   frequency-domain/smoothness метрики (§11.4 НТЗ: PSD, dominant frequency,
+   SPARC, jerk) как рабочие: при 10-20 Hz предел Найквиста (5-10 Hz) делает
+   такие признаки ненадёжными для целевых движений реабилитации.
+
+8. Действующий в коде engineering-default порог Signal Quality -- поток ниже
+   технической частоты 15 Hz даёт `LOW` (`docs/imu/signal-quality.md`,
+   `services/api/app/signal_quality.py`) -- несовместим с конфигурацией
+   подтверждённого датчика на 10 Hz: система будет систематически
+   блокировать scoring на разрешённой вендором настройке железа. Нужно
+   решение до включения hardware-режима: обязать прошивку на ≥20 Hz либо
+   сделать порог Signal Quality конфигурируемым по фактической частоте
+   устройства. Связано с R-07 НТЗ (bench-валидация синхронизации).
