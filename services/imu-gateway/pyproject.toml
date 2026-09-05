@@ -1,0 +1,9 @@
+[project]
+name = "phoenix-imu-gateway"
+version = "0.1.0"
+description = "PHOENIX IMU gateway technical scaffold"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.unittest]
+start-directory = "tests"
