@@ -5,5 +5,11 @@ description = "PHOENIX IMU gateway technical scaffold"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+ble = ["bleak>=0.22,<1"]
+
+[project.optional-dependencies]
+ble = ["bleak>=0.22,<1"]
+
 [tool.unittest]
 start-directory = "tests"
