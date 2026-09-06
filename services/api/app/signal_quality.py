@@ -26,10 +26,26 @@ MIN_CALIBRATION_SECONDS = 3.0
 # degraded stream. Still an engineering default pending device/clinical
 # validation.
 MIN_SAMPLE_RATE_HZ = 8.0
-MAX_SYNC_SKEW_MS = 100.0
+# Three independently-clocked WT901BLE68 units over three separate BLE
+# connections (services/imu-gateway is single-process; a Web Bluetooth client
+# is three independent GATT links) are not phase-locked to a shared clock.
+# At the confirmed ~10-12 Hz per-sensor rate, one sample period alone is
+# 80-100ms, so 100ms left effectively no room for ordinary inter-device
+# jitter and marked every real hardware session at best MEDIUM. Raised to
+# give margin above one sample period; still an engineering default pending
+# device/clinical validation, not a synchronisation guarantee.
+MAX_SYNC_SKEW_MS = 250.0
 MAX_GAP_SECONDS = 1.0
 CLIPPING_RAW_LIMIT = 32_700
-MAX_STATIC_GYROSCOPE_RAW = 100
+# A live capture from real (stationary, resting-on-a-surface) WT901BLE68
+# hardware on 2026-09-05 (docs/imu/current-script-audit.md) measured a gyro
+# raw value of 700 on one axis -- 7x the previous limit of 100. That prior
+# limit was only ever validated against synthetic frames, which are exactly
+# zero when at rest; it does not reflect this sensor's real noise floor.
+# Raised with margin above the one observed real-rest sample; still an
+# engineering default pending a proper stationary-vs-moving hardware
+# comparison, not a clinical threshold.
+MAX_STATIC_GYROSCOPE_RAW = 2000
 
 
 @dataclass(frozen=True, slots=True)

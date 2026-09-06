@@ -29,6 +29,9 @@ class IdentityInvitationTests(unittest.TestCase):
             "create_protocol_version",
             "submit_symptom_check",
             "create_alert_action",
+            "start_exercise_attempt",
+            "complete_exercise_attempt",
+            "register_sensor_device",
         ):
             body = self._function(name)
             self.assertIn("_insert_audit(\n            cursor,", body, name)
@@ -36,6 +39,8 @@ class IdentityInvitationTests(unittest.TestCase):
     def test_patient_data_reads_are_audited(self) -> None:
         for name, event in (
             ("get_patient", "patient_view"),
+            ("get_current_patient", "patient_self_view"),
+            ("list_patients", "patients_list_view"),
             ("get_current_protocol", "protocol_view"),
             ("get_protocol_history", "protocol_history_view"),
             ("get_signal_quality", "signal_quality_view"),

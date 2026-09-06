@@ -1,0 +1,13 @@
+{
+  "name": "phoenix",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/ui"
+  ],
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "jsdom": "^25.0.1",
+    "vitest": "^3.0.5"
+  }
+}

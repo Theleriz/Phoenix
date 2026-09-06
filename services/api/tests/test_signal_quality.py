@@ -52,6 +52,23 @@ class SignalQualityTests(unittest.TestCase):
         self.assertNotIn("insufficient_sample_rate", report.reasons)
         self.assertEqual(report.level, SignalQualityLevel.HIGH)
 
+    def test_confirmed_hardware_rest_noise_does_not_trip_the_motion_gate(self) -> None:
+        """A real (stationary) WT901BLE68 capture on 2026-09-05 measured gx=700 at rest.
+
+        MAX_STATIC_GYROSCOPE_RAW's prior limit of 100 was only ever validated
+        against synthetic frames (always exactly zero at rest) and flagged
+        every real hardware calibration attempt as movement.
+        """
+        started = datetime(2026, 1, 1, tzinfo=UTC)
+        events = [
+            event(role, started + timedelta(milliseconds=50 * index), index, gx=700, gy=135, gz=167)
+            for role in ("thigh", "shank", "foot")
+            for index in range(61)
+        ]
+        report = evaluate_signal_quality(events)
+        self.assertNotIn("static_calibration_motion_detected", report.reasons)
+        self.assertEqual(report.level, SignalQualityLevel.HIGH)
+
     def test_marks_missing_sensor_invalid(self) -> None:
         started = datetime(2026, 1, 1, tzinfo=UTC)
         report = evaluate_signal_quality([event("thigh", started, 0)])
@@ -77,7 +94,7 @@ class SignalQualityTests(unittest.TestCase):
             for index in range(61)
         ]
         events.extend(
-            event("foot", started + timedelta(milliseconds=50 * index + 150), index)
+            event("foot", started + timedelta(milliseconds=50 * index + 300), index)
             for index in range(61)
         )
         report = evaluate_signal_quality(events)
@@ -87,7 +104,7 @@ class SignalQualityTests(unittest.TestCase):
     def test_motion_during_static_calibration_is_low(self) -> None:
         started = datetime(2026, 1, 1, tzinfo=UTC)
         events = [
-            event(role, started + timedelta(milliseconds=50 * index), index, gy=101)
+            event(role, started + timedelta(milliseconds=50 * index), index, gy=2001)
             for role in ("thigh", "shank", "foot")
             for index in range(61)
         ]

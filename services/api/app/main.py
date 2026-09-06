@@ -39,8 +39,14 @@ class GatewayStreams:
     def __init__(self) -> None:
         self._clients: dict[str, set[WebSocket]] = {}
 
-    async def connect(self, session_id: str, client: WebSocket) -> None:
-        await client.accept()
+    async def connect(
+        self, session_id: str, client: WebSocket, *, subprotocol: str | None = None
+    ) -> None:
+        # Per the WebSocket spec, a client that offers Sec-WebSocket-Protocol
+        # values requires the server to echo back one of them, or browsers
+        # abort the connection even after a 101 handshake. `accept()` sends no
+        # such header unless told to.
+        await client.accept(subprotocol=subprotocol)
         self._clients.setdefault(session_id, set()).add(client)
 
     def disconnect(self, session_id: str, client: WebSocket) -> None:
@@ -335,7 +341,7 @@ def require_gateway_authorization(authorization: str | None) -> None:
 async def ingest_imu_packet(
     packet: GatewayIMUPacket,
     authorization: Annotated[str | None, Header()] = None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     """Persist one raw event, then publish it to local WebSocket listeners.
 
     202, not 200: the guarantee is that the raw event is durably stored. The
@@ -582,12 +588,142 @@ async def stream_gateway_packets(websocket: WebSocket, session_id: str) -> None:
     if not gateway_token_is_valid(_websocket_gateway_token(websocket)):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-    await gateway_streams.connect(session_id, websocket)
+    requested_protocol = websocket.headers.get("sec-websocket-protocol", "")
+    negotiated_protocol = requested_protocol.split(",")[0].strip() if requested_protocol else None
+    await gateway_streams.connect(session_id, websocket, subprotocol=negotiated_protocol)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         gateway_streams.disconnect(session_id, websocket)
+
+
+class ExerciseAttemptRequest(BaseModel):
+    source_kind: str = Field(pattern="^(synthetic|hardware)$")
+    exercise_prescription_id: str
+
+
+@app.post("/api/v1/episodes/{episode_id}/exercise-attempts", status_code=201, tags=["gateway"])
+def start_exercise_attempt(
+    episode_id: str, request: ExerciseAttemptRequest, identity: Identity
+) -> dict[str, str]:
+    """Open the (rehab_session, exercise_attempt) pair gateway ingestion requires.
+
+    ``POST /api/v1/gateway/imu-packets`` only accepts packets for an
+    already-open pair matched by ``session_id`` -- this is where that pair is
+    created, so a real (or synthetic) sensor stream has something to ingest
+    against.
+    """
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT patient.user_id FROM episodes_of_care episode
+               JOIN patients patient ON patient.id = episode.patient_id
+               WHERE episode.id = %s AND episode.organization_id = %s""",
+            (episode_id, organization_id),
+        )
+        episode = cursor.fetchone()
+        if episode is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=episode[0],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Episode not found")
+        cursor.execute(
+            """SELECT 1 FROM exercise_prescriptions ep
+               JOIN protocol_assignments pa ON pa.id = ep.protocol_assignment_id
+               WHERE ep.id = %s AND ep.organization_id = %s AND pa.episode_id = %s""",
+            (request.exercise_prescription_id, organization_id, episode_id),
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(
+                status_code=422, detail="Unknown exercise prescription for this episode"
+            )
+        session_id = str(uuid4())
+        attempt_id = str(uuid4())
+        cursor.execute(
+            """INSERT INTO rehab_sessions
+               (id, organization_id, episode_id, source_kind, started_at)
+               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+            (session_id, organization_id, episode_id, request.source_kind),
+        )
+        cursor.execute(
+            """INSERT INTO exercise_attempts
+               (id, organization_id, rehab_session_id, exercise_prescription_id, started_at)
+               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+            (attempt_id, organization_id, session_id, request.exercise_prescription_id),
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="exercise_attempt_started",
+            subject_type="exercise_attempt",
+            subject_id=attempt_id,
+        )
+    return {"session_id": session_id, "exercise_attempt_id": attempt_id}
+
+
+@app.post("/api/v1/exercise-attempts/{attempt_id}/complete", tags=["gateway"])
+def complete_exercise_attempt(attempt_id: str, identity: Identity) -> dict[str, object]:
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT patient.user_id FROM exercise_attempts attempt
+               JOIN rehab_sessions session ON session.id = attempt.rehab_session_id
+               JOIN episodes_of_care episode ON episode.id = session.episode_id
+               JOIN patients patient ON patient.id = episode.patient_id
+               WHERE attempt.id = %s AND attempt.organization_id = %s""",
+            (attempt_id, organization_id),
+        )
+        row = cursor.fetchone()
+        if row is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=row[0],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Exercise attempt not found")
+        cursor.execute(
+            """UPDATE exercise_attempts SET ended_at = CURRENT_TIMESTAMP
+               WHERE id = %s AND ended_at IS NULL""",
+            (attempt_id,),
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="exercise_attempt_completed",
+            subject_type="exercise_attempt",
+            subject_id=attempt_id,
+        )
+    return {"exercise_attempt_id": attempt_id, "status": "completed"}
+
+
+class SensorDeviceRequest(BaseModel):
+    device_identifier: str = Field(min_length=1, max_length=200)
+    model: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/api/v1/sensor-devices", tags=["gateway"])
+def register_sensor_device(request: SensorDeviceRequest, identity: Identity) -> dict[str, str]:
+    """Idempotent upsert so a patient's own browser can register its own sensors."""
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO sensor_devices (id, organization_id, device_identifier, model)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (organization_id, device_identifier)
+               DO UPDATE SET model = EXCLUDED.model
+               RETURNING id""",
+            (str(uuid4()), organization_id, request.device_identifier, request.model),
+        )
+        device_id = cursor.fetchone()[0]
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="sensor_device_registered",
+            subject_type="sensor_device",
+            subject_id=device_id,
+        )
+    return {"id": device_id}
 
 
 @app.get("/api/v1/rehab-sessions/{session_id}/signal-quality", tags=["signal-quality"])
@@ -653,6 +789,91 @@ def get_current_user(identity: Identity) -> dict[str, object]:
         "organization_id": identity["organization_id"],
         "roles": sorted(identity["roles"]),
     }
+
+
+PATIENT_LIST_ROLES = frozenset({"clinician", "rehabilitologist", "organization_admin"})
+
+
+def _active_episode_id(cursor: Any, *, patient_id: str, organization_id: str) -> str | None:
+    """Most recent episode for the patient.
+
+    ``episodes_of_care.status`` is free text, not a constrained enum (see
+    migration 0002), and the seeded demo episode uses the marker
+    ``development_fixture`` rather than ``active`` -- so this deliberately
+    does not filter on a specific status value, only recency.
+    """
+    cursor.execute(
+        """SELECT id FROM episodes_of_care
+           WHERE patient_id = %s AND organization_id = %s
+           ORDER BY created_at DESC LIMIT 1""",
+        (patient_id, organization_id),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+@app.get("/api/v1/patients/me", tags=["patients"])
+def get_current_patient(identity: Identity) -> dict[str, object]:
+    """Self-lookup for a logged-in patient -- the only way to learn one's own patient_id."""
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT id, display_name, post_op_day FROM patients
+               WHERE user_id = %s AND organization_id = %s""",
+            (str(identity["user_id"]), organization_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No patient record for this user")
+        active_episode_id = _active_episode_id(
+            cursor, patient_id=row[0], organization_id=organization_id
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="patient_self_view",
+            subject_type="patient",
+            subject_id=row[0],
+        )
+    return {
+        "id": row[0],
+        "display_name": row[1],
+        "post_op_day": row[2],
+        "active_episode_id": active_episode_id,
+    }
+
+
+@app.get("/api/v1/patients", tags=["patients"])
+def list_patients(identity: Identity) -> list[dict[str, object]]:
+    """Org-scoped patient list for a clinician's dashboard queue."""
+    require_roles(identity, PATIENT_LIST_ROLES)
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT id, display_name, post_op_day FROM patients
+               WHERE organization_id = %s ORDER BY display_name""",
+            (organization_id,),
+        )
+        rows = cursor.fetchall()
+        results = [
+            {
+                "id": row[0],
+                "display_name": row[1],
+                "post_op_day": row[2],
+                "active_episode_id": _active_episode_id(
+                    cursor, patient_id=row[0], organization_id=organization_id
+                ),
+            }
+            for row in rows
+        ]
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="patients_list_view",
+            subject_type="organization",
+            subject_id=organization_id,
+        )
+    return results
 
 
 @app.get("/api/v1/patients/{patient_id}", tags=["patients"])

@@ -61,3 +61,25 @@ class GatewayIngestionTests(unittest.TestCase):
     def test_preprocessing_metric_failure_does_not_sink_the_raw_event(self) -> None:
         self.assertIn("except psycopg.Error:", self.api_source)
         self.assertIn('preprocessing["metric_persisted"] = False', self.api_source)
+
+    def test_websocket_echoes_back_the_negotiated_subprotocol(self) -> None:
+        # A client offering Sec-WebSocket-Protocol values (browsers must use
+        # this, not `?token=`, to keep a bearer secret out of logs/history)
+        # requires the server to echo one back on accept(), or browsers abort
+        # the connection even after a 101 handshake -- confirmed against a
+        # real browser client, not just this source check.
+        self.assertIn("subprotocol: str | None = None", self.api_source)
+        self.assertIn("await client.accept(subprotocol=subprotocol)", self.api_source)
+        self.assertIn("negotiated_protocol = requested_protocol.split", self.api_source)
+        self.assertIn("subprotocol=negotiated_protocol", self.api_source)
+
+    def test_ingest_response_type_matches_its_nested_dict_body(self) -> None:
+        # The response includes nested dicts (signal_quality, preprocessing) and
+        # a nullable string (preprocessing_metric_id) -- a `dict[str, str]`
+        # return annotation makes FastAPI's response validation 500 on every
+        # successful ingest (caught by a live end-to-end run, not by the
+        # source-string tests in this file).
+        start = self.api_source.index("async def ingest_imu_packet(")
+        signature_end = self.api_source.index(":", self.api_source.index(") ->", start))
+        signature = self.api_source[start:signature_end]
+        self.assertIn("-> dict[str, object]", signature)

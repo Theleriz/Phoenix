@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "apps/clinician-web", "run", "dev", "--", "--port", "5174", "--strictPort"],
       "port": 5174
+    },
+    {
+      "name": "patient-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/patient-web", "run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173
     }
   ]
 }

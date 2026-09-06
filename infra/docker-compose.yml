@@ -58,7 +58,10 @@ services:
 
   patient-web:
     build:
-      context: ../apps/patient-web
+      context: ..
+      dockerfile: apps/patient-web/Dockerfile
+      args:
+        VITE_PHOENIX_GATEWAY_TOKEN: ${PHOENIX_GATEWAY_TOKEN}
     ports:
       - "8080:80"
     depends_on:
@@ -66,7 +69,8 @@ services:
 
   clinician-web:
     build:
-      context: ../apps/clinician-web
+      context: ..
+      dockerfile: apps/clinician-web/Dockerfile
     ports:
       - "8081:80"
     depends_on:
