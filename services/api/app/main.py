@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 from datetime import datetime
 from typing import Annotated, Any
@@ -14,14 +15,20 @@ import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.types.json import Json
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .biomechanics import BiomechanicsClient, PreprocessingUnavailable
 from .demo import demo_snapshot
+from .safety_rules import SafetyRulePolicy, evaluate_safety_rules
 from .security import can_view_patient, issue_token, verify_token
 from .signal_quality import evaluate_signal_quality
 
 app = FastAPI(title="PHOENIX API", version="0.1.0", docs_url="/docs")
+
+# A patient-reported symptom key: lowercase snake_case, matching the shape of the
+# keys an org configures in its safety_rule_policies (e.g. "chest_pain").
+_SYMPTOM_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+MAX_REPORTED_SYMPTOMS = 32
 bearer = HTTPBearer()
 INVITATION_ADMIN_ROLES = frozenset({"organization_admin", "technical_admin"})
 
@@ -145,23 +152,28 @@ def require_roles(identity: dict[str, object], permitted: frozenset[str]) -> Non
         raise HTTPException(status_code=403, detail="Insufficient role")
 
 
-def write_audit(
-    *, identity: dict[str, object], event_type: str, subject_type: str, subject_id: str
+def _insert_audit(
+    cursor: Any,
+    *,
+    identity: dict[str, object],
+    event_type: str,
+    subject_type: str,
+    subject_id: str,
 ) -> None:
-    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
-        cursor.execute(
-            """INSERT INTO audit_events
-               (id, organization_id, actor_user_id, event_type, subject_type, subject_id)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (
-                str(uuid4()),
-                str(identity["organization_id"]),
-                str(identity["user_id"]),
-                event_type,
-                subject_type,
-                subject_id,
-            ),
-        )
+    """Append one audit row on an existing cursor so it shares the caller's transaction."""
+    cursor.execute(
+        """INSERT INTO audit_events
+           (id, organization_id, actor_user_id, event_type, subject_type, subject_id)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (
+            str(uuid4()),
+            str(identity["organization_id"]),
+            str(identity["user_id"]),
+            event_type,
+            subject_type,
+            subject_id,
+        ),
+    )
 
 
 @app.post("/api/v1/auth/login", tags=["identity"])
@@ -176,10 +188,12 @@ def login(request: LoginRequest) -> dict[str, str]:
             (request.email, request.organization_id, request.password),
         )
         row = cursor.fetchone()
-    if row is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials or organization")
-    identity = {"user_id": row[0], "organization_id": request.organization_id}
-    write_audit(identity=identity, event_type="login", subject_type="user", subject_id=row[0])
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials or organization")
+        identity = {"user_id": row[0], "organization_id": request.organization_id}
+        _insert_audit(
+            cursor, identity=identity, event_type="login", subject_type="user", subject_id=row[0]
+        )
     return {"access_token": issue_token(**identity, secret=auth_secret()), "token_type": "bearer"}
 
 
@@ -189,6 +203,7 @@ def create_invitation(request: InvitationRequest, identity: Identity) -> dict[st
     invitation_id = str(uuid4())
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
+    invited_email = request.email.lower()
     with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT id FROM roles WHERE name = %s",
@@ -197,6 +212,23 @@ def create_invitation(request: InvitationRequest, identity: Identity) -> dict[st
         role = cursor.fetchone()
         if role is None:
             raise HTTPException(status_code=422, detail="Unknown role")
+        # An invitation may onboard a new email or recover access for someone who
+        # already belongs to this organization. It must never be usable to reset
+        # the credentials of a user whose memberships are all in other tenants.
+        cursor.execute(
+            """SELECT 1 FROM users u
+               WHERE u.email = %s
+                 AND NOT EXISTS (
+                     SELECT 1 FROM memberships m
+                     WHERE m.user_id = u.id AND m.organization_id = %s
+                 )""",
+            (invited_email, str(identity["organization_id"])),
+        )
+        if cursor.fetchone() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="A user with this email already exists outside this organization",
+            )
         cursor.execute(
             """INSERT INTO invitations
                (id, organization_id, email, role_id, token_hash, expires_at, created_by_user_id)
@@ -204,19 +236,20 @@ def create_invitation(request: InvitationRequest, identity: Identity) -> dict[st
             (
                 invitation_id,
                 str(identity["organization_id"]),
-                request.email.lower(),
+                invited_email,
                 role[0],
                 token_hash,
                 request.expires_in_hours,
                 str(identity["user_id"]),
             ),
         )
-    write_audit(
-        identity=identity,
-        event_type="invitation_created",
-        subject_type="invitation",
-        subject_id=invitation_id,
-    )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="invitation_created",
+            subject_type="invitation",
+            subject_id=invitation_id,
+        )
     # The token is shown once for the development flow. Production must deliver it out of band.
     return {"invitation_id": invitation_id, "token": token}
 
@@ -236,32 +269,54 @@ def accept_invitation(request: InvitationAcceptance) -> dict[str, str]:
         invitation = cursor.fetchone()
         if invitation is None:
             raise HTTPException(status_code=400, detail="Invalid or expired invitation")
+        invitation_id, invitation_org_id, invitation_email, invitation_role_id = invitation
+
+        # Re-check at accept time, not just at invite creation: the invitation's
+        # ON CONFLICT below would otherwise reset the password of any existing
+        # user with this email. Only allow that for a user who already belongs
+        # to this organization (the sanctioned access-recovery flow).
+        cursor.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM memberships m
+                   WHERE m.user_id = u.id AND m.organization_id = %s
+               )
+               FROM users u WHERE u.email = %s""",
+            (invitation_org_id, invitation_email),
+        )
+        existing_user = cursor.fetchone()
+        if existing_user is not None and not existing_user[0]:
+            raise HTTPException(
+                status_code=409,
+                detail="A user with this email already exists outside this organization",
+            )
+
         cursor.execute(
             """INSERT INTO users (id, email, display_name, password_hash)
                VALUES (%s, %s, %s, crypt(%s, gen_salt('bf')))
                ON CONFLICT (email) DO UPDATE SET
                  display_name = EXCLUDED.display_name, password_hash = EXCLUDED.password_hash
                RETURNING id""",
-            (str(uuid4()), invitation[2], request.display_name, request.password),
+            (str(uuid4()), invitation_email, request.display_name, request.password),
         )
         user_id = cursor.fetchone()[0]
         cursor.execute(
             """INSERT INTO memberships (id, organization_id, user_id, role_id)
                VALUES (%s, %s, %s, %s)
                ON CONFLICT (organization_id, user_id, role_id) DO NOTHING""",
-            (str(uuid4()), invitation[1], user_id, invitation[3]),
+            (str(uuid4()), invitation_org_id, user_id, invitation_role_id),
         )
         cursor.execute(
             "UPDATE invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = %s",
-            (invitation[0],),
+            (invitation_id,),
         )
-    identity = {"user_id": user_id, "organization_id": invitation[1]}
-    write_audit(
-        identity=identity,
-        event_type="invitation_accepted",
-        subject_type="invitation",
-        subject_id=invitation[0],
-    )
+        identity = {"user_id": user_id, "organization_id": invitation_org_id}
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="invitation_accepted",
+            subject_type="invitation",
+            subject_id=invitation_id,
+        )
     return {"access_token": issue_token(**identity, secret=auth_secret()), "token_type": "bearer"}
 
 
@@ -281,7 +336,14 @@ async def ingest_imu_packet(
     packet: GatewayIMUPacket,
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, str]:
-    """Persist one raw event before publishing it to local WebSocket listeners."""
+    """Persist one raw event, then publish it to local WebSocket listeners.
+
+    202, not 200: the guarantee is that the raw event is durably stored. The
+    signal-quality and preprocessing fields in the response are best-effort
+    derived context computed inline for the dev scaffold, not part of that
+    guarantee -- ``preprocessing.status`` / ``metric_persisted`` report whether
+    each downstream step actually ran.
+    """
     require_gateway_authorization(authorization)
     payload = packet.model_dump(mode="json")
     canonical_payload = json.dumps(
@@ -313,6 +375,16 @@ async def ingest_imu_packet(
         device = cursor.fetchone()
         if device is None:
             raise HTTPException(status_code=422, detail="Unregistered gateway device")
+        # Idempotency: the same (session, sensor, sequence) is one physical
+        # sample. Reject a replay before it can create a duplicate chunk/event
+        # (the unique index from migration 0015 is the race-proof backstop).
+        cursor.execute(
+            """SELECT 1 FROM gateway_packet_events
+               WHERE rehab_session_id = %s AND sensor_role = %s AND sequence_number = %s""",
+            (packet.session_id, packet.sensor_role, packet.sequence_number),
+        )
+        if cursor.fetchone() is not None:
+            raise HTTPException(status_code=409, detail="Duplicate gateway packet")
         cursor.execute(
             """INSERT INTO raw_imu_chunks
                (id, organization_id, exercise_attempt_id, sensor_device_id, storage_uri, sha256,
@@ -347,9 +419,16 @@ async def ingest_imu_packet(
                 Json(payload),
             ),
         )
+        # Signal quality is re-derived from the whole session on every packet.
+        # For the synthetic-replay dev scaffold a session is tens of events; the
+        # LIMIT is a guard against a pathologically long stream turning this into
+        # an O(n^2) reprocess. It keeps the earliest events, so the static
+        # calibration window (the only part the gate acts on) is unaffected.
+        # A durable per-attempt aggregation is a production concern -- see
+        # unsolved-problems.md.
         cursor.execute(
             """SELECT payload FROM gateway_packet_events
-               WHERE rehab_session_id = %s ORDER BY received_at, id""",
+               WHERE rehab_session_id = %s ORDER BY received_at, id LIMIT 6000""",
             (packet.session_id,),
         )
         session_events = [row[0] for row in cursor.fetchall()]
@@ -419,36 +498,47 @@ async def ingest_imu_packet(
                 "parameters": technical_result.get("parameters", {}),
                 "frame_count": len(technical_result.get("frames", [])),
             }
-            preprocessing_metric_id = str(uuid4())
-            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
-                cursor.execute(
-                    """INSERT INTO derived_metrics
-                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id, calibration_id,
-                        algorithm_version_id, name, value)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (
-                        preprocessing_metric_id,
-                        organization_id,
-                        attempt_id,
-                        chunk_id,
-                        calibration_id or existing_calibration_id,
-                        "algorithm-imu-preprocessing-v1",
-                        "technical_preprocessing",
-                        Json(
-                            {
-                                "status": preprocessing["status"],
-                                "reasons": preprocessing["reasons"],
-                                "frame_count": preprocessing["frame_count"],
-                                "parameters": preprocessing["parameters"],
-                                "limitations": [
-                                    "No sensor fusion, angle estimation, rep segmentation, "
-                                    "scoring, "
-                                    "or clinical feedback."
-                                ],
-                            }
+            # The raw event and its signal_quality row are already committed --
+            # that is the contract this endpoint promises. This derived metric is
+            # additive lineage in its own transaction: if it fails, surface that
+            # in the response rather than 500-ing (which would invite a retry
+            # that the 0015 dedup index now rejects anyway).
+            metric_id = str(uuid4())
+            try:
+                with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                    cursor.execute(
+                        """INSERT INTO derived_metrics
+                           (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                            calibration_id, algorithm_version_id, name, value)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            metric_id,
+                            organization_id,
+                            attempt_id,
+                            chunk_id,
+                            calibration_id or existing_calibration_id,
+                            "algorithm-imu-preprocessing-v1",
+                            "technical_preprocessing",
+                            Json(
+                                {
+                                    "status": preprocessing["status"],
+                                    "reasons": preprocessing["reasons"],
+                                    "frame_count": preprocessing["frame_count"],
+                                    "parameters": preprocessing["parameters"],
+                                    "limitations": [
+                                        "No sensor fusion, angle estimation, rep segmentation, "
+                                        "scoring, "
+                                        "or clinical feedback."
+                                    ],
+                                }
+                            ),
                         ),
-                    ),
-                )
+                    )
+            except psycopg.Error:
+                preprocessing["metric_persisted"] = False
+            else:
+                preprocessing_metric_id = metric_id
+                preprocessing["metric_persisted"] = True
     elif quality_report["scoring_permitted"]:
         preprocessing = {"status": "not_configured"}
     event = {
@@ -468,10 +558,28 @@ async def ingest_imu_packet(
     }
 
 
+def _websocket_gateway_token(websocket: WebSocket) -> str:
+    """Prefer a header; fall back to the query string for browser WS clients.
+
+    Browsers cannot set headers on a WebSocket handshake, so ``?token=`` stays
+    supported, but a non-browser caller (the gateway itself) should send the
+    token in ``Authorization: Bearer`` or the ``Sec-WebSocket-Protocol`` header
+    to keep it out of access logs and URLs.
+    """
+    header = websocket.headers.get("authorization", "")
+    scheme, _, bearer = header.partition(" ")
+    if scheme.lower() == "bearer" and bearer:
+        return bearer
+    protocol = websocket.headers.get("sec-websocket-protocol", "")
+    if protocol:
+        return protocol.split(",")[0].strip()
+    return websocket.query_params.get("token", "")
+
+
 @app.websocket("/api/v1/gateway/sessions/{session_id}/stream")
 async def stream_gateway_packets(websocket: WebSocket, session_id: str) -> None:
     """Authenticated live transport stream, intentionally separate from scoring."""
-    if not gateway_token_is_valid(websocket.query_params.get("token", "")):
+    if not gateway_token_is_valid(_websocket_gateway_token(websocket)):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     await gateway_streams.connect(session_id, websocket)
@@ -502,12 +610,19 @@ def get_signal_quality(session_id: str, identity: Identity) -> dict[str, object]
             (session_id, str(identity["organization_id"])),
         )
         row = cursor.fetchone()
-    if row is None or not can_view_patient(
-        roles=frozenset(identity["roles"]),
-        patient_user_id=row[2],
-        user_id=str(identity["user_id"]),
-    ):
-        raise HTTPException(status_code=404, detail="Rehabilitation session not found")
+        if row is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=row[2],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Rehabilitation session not found")
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="signal_quality_view",
+            subject_type="rehab_session",
+            subject_id=session_id,
+        )
     if row[0] is None:
         return {
             "session_id": session_id,
@@ -549,16 +664,19 @@ def get_patient(patient_id: str, identity: Identity) -> dict[str, object]:
             (patient_id, str(identity["organization_id"])),
         )
         row = cursor.fetchone()
-    if row is None or not can_view_patient(
-        roles=frozenset(identity["roles"]), patient_user_id=row[3], user_id=str(identity["user_id"])
-    ):
-        raise HTTPException(status_code=404, detail="Patient not found")
-    write_audit(
-        identity=identity,
-        event_type="patient_view",
-        subject_type="patient",
-        subject_id=patient_id,
-    )
+        if row is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=row[3],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Patient not found")
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="patient_view",
+            subject_type="patient",
+            subject_id=patient_id,
+        )
     return {"id": row[0], "display_name": row[1], "post_op_day": row[2]}
 
 
@@ -616,18 +734,19 @@ def get_current_protocol(episode_id: str, identity: Identity) -> dict[str, objec
             (episode_id, str(identity["organization_id"])),
         )
         rows = cursor.fetchall()
-    if not rows or not can_view_patient(
-        roles=frozenset(identity["roles"]),
-        patient_user_id=rows[0][10],
-        user_id=str(identity["user_id"]),
-    ):
-        raise HTTPException(status_code=404, detail="Protocol not found")
-    write_audit(
-        identity=identity,
-        event_type="protocol_view",
-        subject_type="protocol_assignment",
-        subject_id=rows[0][0],
-    )
+        if not rows or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=rows[0][10],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Protocol not found")
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="protocol_view",
+            subject_type="protocol_assignment",
+            subject_id=rows[0][0],
+        )
     return {
         "assignment_id": rows[0][0],
         "version": rows[0][1],
@@ -663,18 +782,19 @@ def get_protocol_history(episode_id: str, identity: Identity) -> list[dict[str, 
             (episode_id, str(identity["organization_id"])),
         )
         rows = cursor.fetchall()
-    if not rows or not can_view_patient(
-        roles=frozenset(identity["roles"]),
-        patient_user_id=rows[0][9],
-        user_id=str(identity["user_id"]),
-    ):
-        raise HTTPException(status_code=404, detail="Protocol history not found")
-    write_audit(
-        identity=identity,
-        event_type="protocol_history_view",
-        subject_type="episode",
-        subject_id=episode_id,
-    )
+        if not rows or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=rows[0][9],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Protocol history not found")
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="protocol_history_view",
+            subject_type="episode",
+            subject_id=episode_id,
+        )
     return [
         {
             "assignment_id": row[0],
@@ -769,10 +889,292 @@ def create_protocol_version(
                  AND superseded_at IS NULL""",
             (episode_id, organization_id, assignment_id),
         )
-    write_audit(
-        identity=identity,
-        event_type="protocol_version_created",
-        subject_type="protocol_assignment",
-        subject_id=assignment_id,
-    )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="protocol_version_created",
+            subject_type="protocol_assignment",
+            subject_id=assignment_id,
+        )
     return {"assignment_id": assignment_id, "prescription_id": prescription_id, "version": version}
+
+
+ALERT_ACTION_ROLES = frozenset({"clinician", "rehabilitologist", "organization_admin"})
+
+
+class SymptomCheckRequest(BaseModel):
+    """Post-session patient-reported check; never itself a diagnosis (NTZ 14.1)."""
+
+    pain_before: float | None = Field(default=None, ge=0, le=10)
+    pain_after: float | None = Field(default=None, ge=0, le=10)
+    difficulty: float | None = Field(default=None, ge=0, le=10)
+    knee_feels: str | None = Field(
+        default=None, pattern="^(better|same|slightly_worse|much_worse)$"
+    )
+    reported_symptoms: list[str] = Field(default_factory=list, max_length=128)
+
+    @field_validator("reported_symptoms")
+    @classmethod
+    def _normalise_symptoms(cls, value: list[str]) -> list[str]:
+        """Trim, lowercase, format-check and de-duplicate; cap the count.
+
+        An unknown but well-formed key is still allowed through -- the safety
+        engine deliberately routes unconfigured symptoms to YELLOW review. This
+        only stops unbounded lists and free-text abuse from reaching the alert
+        trigger and the audit log.
+        """
+        seen: list[str] = []
+        for raw in value:
+            key = raw.strip().lower()
+            if not key:
+                continue
+            if not _SYMPTOM_KEY.fullmatch(key):
+                raise ValueError(f"invalid symptom key: {raw!r}")
+            if key not in seen:
+                seen.append(key)
+        if len(seen) > MAX_REPORTED_SYMPTOMS:
+            raise ValueError(f"too many reported symptoms (max {MAX_REPORTED_SYMPTOMS})")
+        return seen
+
+
+class AlertActionRequest(BaseModel):
+    action_type: str = Field(pattern="^(acknowledged|dismissed)$")
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@app.post(
+    "/api/v1/rehab-sessions/{session_id}/symptom-check", status_code=201, tags=["safety"]
+)
+def submit_symptom_check(
+    session_id: str, request: SymptomCheckRequest, identity: Identity
+) -> dict[str, object]:
+    """Evaluate a symptom check against the org's deterministic safety policy.
+
+    Only a clinically_approved policy can ever produce a real GREEN/YELLOW/RED
+    level; an unapproved or missing policy withholds a result rather than
+    guessing, and no alert row is created for it.
+    """
+    organization_id = str(identity["organization_id"])
+    symptom_check_id = str(uuid4())
+    assessment_id = str(uuid4())
+    answers = request.model_dump()
+    alert_id: str | None = None
+
+    # One transaction for the whole workflow: the symptom check, its safety
+    # assessment (persisted for every outcome, not only YELLOW/RED), any alert,
+    # and the audit rows either all commit together or none do.
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT rs.episode_id, patient.user_id
+               FROM rehab_sessions rs
+               JOIN episodes_of_care episode ON episode.id = rs.episode_id
+               JOIN patients patient ON patient.id = episode.patient_id
+               WHERE rs.id = %s AND rs.organization_id = %s""",
+            (session_id, organization_id),
+        )
+        session = cursor.fetchone()
+        if session is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=session[1],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Rehabilitation session not found")
+        episode_id = session[0]
+
+        cursor.execute(
+            """INSERT INTO symptom_checks (id, organization_id, rehab_session_id, answers)
+               VALUES (%s, %s, %s, %s)""",
+            (symptom_check_id, organization_id, session_id, Json(answers)),
+        )
+
+        cursor.execute(
+            """SELECT version, configuration FROM safety_rule_policies
+               WHERE organization_id = %s ORDER BY created_at DESC LIMIT 1""",
+            (organization_id,),
+        )
+        policy_row = cursor.fetchone()
+
+        if policy_row is None:
+            assessment = {
+                "status": "withheld",
+                "level": None,
+                "reasons": ["no_policy_configured"],
+                "policy_version": None,
+            }
+        else:
+            policy_version, configuration = policy_row
+            try:
+                policy = SafetyRulePolicy.from_configuration(
+                    {**configuration, "version": policy_version}
+                )
+            except ValueError as error:
+                # A malformed stored policy must withhold a result, not 500 the
+                # patient and leave the check evaluated against nothing.
+                assessment = {
+                    "status": "withheld",
+                    "level": None,
+                    "reasons": [f"policy_invalid:{error}"],
+                    "policy_version": policy_version,
+                }
+            else:
+                result = evaluate_safety_rules(
+                    policy=policy,
+                    reported_symptoms=frozenset(request.reported_symptoms),
+                    pain_before=request.pain_before,
+                    pain_after=request.pain_after,
+                )
+                assessment = {
+                    "status": result.status.value,
+                    "level": result.level.value if result.level is not None else None,
+                    "reasons": list(result.reasons),
+                    "policy_version": result.policy_version,
+                }
+
+        if assessment["level"] in ("YELLOW", "RED"):
+            alert_id = str(uuid4())
+            cursor.execute(
+                """INSERT INTO alerts
+                   (id, organization_id, episode_id, severity, rule_version, trigger)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (
+                    alert_id,
+                    organization_id,
+                    episode_id,
+                    assessment["level"].lower(),
+                    assessment["policy_version"],
+                    Json({"symptom_check_id": symptom_check_id, "reasons": assessment["reasons"]}),
+                ),
+            )
+            _insert_audit(
+                cursor,
+                identity=identity,
+                event_type="alert_created",
+                subject_type="alert",
+                subject_id=alert_id,
+            )
+
+        cursor.execute(
+            """INSERT INTO safety_assessments
+               (id, organization_id, rehab_session_id, symptom_check_id, status, level,
+                reasons, policy_version, alert_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                assessment_id,
+                organization_id,
+                session_id,
+                symptom_check_id,
+                assessment["status"],
+                assessment["level"],
+                Json(assessment["reasons"]),
+                assessment["policy_version"],
+                alert_id,
+            ),
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="symptom_check_submitted",
+            subject_type="symptom_check",
+            subject_id=symptom_check_id,
+        )
+
+    return {
+        "symptom_check_id": symptom_check_id,
+        "assessment_id": assessment_id,
+        "safety_assessment": assessment,
+        "alert_id": alert_id,
+    }
+
+
+@app.get("/api/v1/episodes/{episode_id}/alerts", tags=["safety"])
+def list_alerts(episode_id: str, identity: Identity) -> list[dict[str, object]]:
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT patient.user_id FROM episodes_of_care episode
+               JOIN patients patient ON patient.id = episode.patient_id
+               WHERE episode.id = %s AND episode.organization_id = %s""",
+            (episode_id, organization_id),
+        )
+        episode = cursor.fetchone()
+        if episode is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=episode[0],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Episode not found")
+        cursor.execute(
+            """SELECT a.id, a.severity, a.rule_version, a.trigger, a.created_at,
+                      (SELECT ca.action_type FROM clinician_actions ca
+                       WHERE ca.alert_id = a.id ORDER BY ca.created_at DESC LIMIT 1)
+               FROM alerts a
+               WHERE a.episode_id = %s AND a.organization_id = %s
+               ORDER BY a.created_at DESC""",
+            (episode_id, organization_id),
+        )
+        rows = cursor.fetchall()
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="alerts_view",
+            subject_type="episode",
+            subject_id=episode_id,
+        )
+    return [
+        {
+            "id": row[0],
+            "severity": row[1],
+            "rule_version": row[2],
+            "trigger": row[3],
+            "created_at": row[4],
+            "status": row[5] or "open",
+        }
+        for row in rows
+    ]
+
+
+@app.post("/api/v1/alerts/{alert_id}/actions", status_code=201, tags=["safety"])
+def create_alert_action(
+    alert_id: str, request: AlertActionRequest, identity: Identity
+) -> dict[str, object]:
+    """Record acknowledge/dismiss as an append-only clinician action.
+
+    Never edits or deletes the alert itself; the alert's displayed status is
+    always derived from the latest recorded action.
+    """
+    require_roles(identity, ALERT_ACTION_ROLES)
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM alerts WHERE id = %s AND organization_id = %s",
+            (alert_id, organization_id),
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        cursor.execute(
+            "SELECT id FROM clinicians WHERE user_id = %s AND organization_id = %s",
+            (str(identity["user_id"]), organization_id),
+        )
+        clinician = cursor.fetchone()
+        action_id = str(uuid4())
+        cursor.execute(
+            """INSERT INTO clinician_actions
+               (id, organization_id, alert_id, clinician_id, action_type, details)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (
+                action_id,
+                organization_id,
+                alert_id,
+                clinician[0] if clinician is not None else None,
+                request.action_type,
+                Json({"note": request.note}),
+            ),
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type=f"alert_{request.action_type}",
+            subject_type="alert",
+            subject_id=alert_id,
+        )
+    return {"action_id": action_id, "alert_id": alert_id, "status": request.action_type}

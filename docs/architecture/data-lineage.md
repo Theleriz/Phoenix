@@ -24,9 +24,16 @@ patient → episode_of_care → rehab_session → exercise_attempt
 ## Append-only данные
 
 Триггеры PostgreSQL запрещают `UPDATE` и `DELETE` для `raw_imu_chunks`,
-`exercise_scores` и `clinician_actions`. Это предотвращает перезапись
-первичных данных, результата и клинического действия. Файлы raw-пакетов
-хранятся отдельно; схема сохраняет URI и SHA-256.
+`exercise_scores`, `clinician_actions` и `safety_assessments`. Это
+предотвращает перезапись первичных данных, результата, клинического действия
+и записи о детерминированной оценке безопасности. Файлы raw-пакетов хранятся
+отдельно; схема сохраняет URI и SHA-256.
+
+Каждый `POST .../symptom-check` пишет ровно одну строку `safety_assessments`
+в той же транзакции, что и `symptom_checks`, alert и audit — для любого
+исхода, включая `GREEN` и `withheld`. Строка ссылается на `symptom_check_id`
+и `policy_version`, поэтому повторная оценка по новой политике отличима от
+исходной.
 
 ## Ограничения текущей миграции
 
