@@ -7,6 +7,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Exposed for host-side dev tooling (scripts/replay_capture_to_api.py seeds
+    # a hardware session directly). Local only.
+    ports:
+      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ../services/api/migrations/versions:/docker-entrypoint-initdb.d:ro
@@ -47,7 +51,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       API_AUTH_SECRET: ${API_AUTH_SECRET}
       PHOENIX_GATEWAY_TOKEN: ${PHOENIX_GATEWAY_TOKEN}
-      PHOENIX_BIOMECHANICS_URL: http://biomechanics:8080/v1/preprocess
+      # Dev-only: run preprocessing + shadow inference even when the
+      # signal-quality gate is closed (real captures land LOW). Default 0.
+      PHOENIX_ML_FORCE_INFERENCE: ${PHOENIX_ML_FORCE_INFERENCE:-0}
     ports:
       - "8000:8000"
     depends_on:
@@ -85,12 +91,6 @@ services:
       PHOENIX_GATEWAY_TOKEN: ${PHOENIX_GATEWAY_TOKEN}
     depends_on:
       - api
-
-  biomechanics:
-    build:
-      context: ../services/biomechanics
-    ports:
-      - "8010:8080"
 
   ai-orchestrator:
     build:

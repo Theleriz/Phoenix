@@ -18,6 +18,13 @@ export interface SensorConnectionHandlers {
 export interface SensorConnection {
   /** Opaque per-origin id from the browser -- not the physical MAC (Web Bluetooth does not expose it). */
   deviceId: string;
+  /**
+   * Human-readable device name the browser advertised (often the sticker/MAC-like
+   * label printed on WitMotion sensors, e.g. "WT901BLE68"). `null` when the
+   * platform withholds it. Persisted client-side so the patient does not have to
+   * re-identify which physical sensor belongs to which body location every time.
+   */
+  deviceName: string | null;
   disconnect(): void;
 }
 
@@ -68,6 +75,7 @@ export async function connectWt901Sensor(handlers: SensorConnectionHandlers): Pr
 
   return {
     deviceId: device.id,
+    deviceName: device.name ?? null,
     disconnect: () => device.gatt?.disconnect(),
   };
 }

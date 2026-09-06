@@ -23,8 +23,10 @@ class GatewayIngestionTests(unittest.TestCase):
         self.assertIn("evaluate_signal_quality", self.api_source)
         self.assertIn("INSERT INTO signal_quality", self.api_source)
         self.assertIn("INSERT INTO calibrations", self.api_source)
-        self.assertIn("await client.preprocess", self.api_source)
+        self.assertIn("preprocess_transport_events(", self.api_source)
         self.assertIn("INSERT INTO derived_metrics", self.api_source)
+        self.assertIn("run_shadow_inference(", self.api_source)
+        self.assertIn("INSERT INTO shadow_predictions", self.api_source)
         self.assertIn('"/api/v1/rehab-sessions/{session_id}/signal-quality"', self.api_source)
         self.assertIn("signal_quality_not_available", self.api_source)
         self.assertLess(

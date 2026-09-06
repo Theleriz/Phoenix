@@ -1,4 +1,4 @@
-"""Versioned shadow-inference boundary; predictions never drive patient output."""
+"""Versioned shadow-inference gate; predictions never drive patient output."""
 
 from __future__ import annotations
 
@@ -37,11 +37,14 @@ def shadow_infer(
     feature_versions: list[str],
     model_available: bool = False,
 ) -> ShadowPrediction:
-    """Apply gates before any future local model invocation.
+    """Apply the pre-inference gates.
 
-    A model is intentionally unavailable in this scaffold: it needs patient-
-    separated labelled data, validation and clinical approval. The returned
-    abstention is persisted for auditability, not shown as a patient outcome.
+    Returns ``ABSTAINED`` (with a machine-readable ``reason``) when the signal
+    quality gate is closed or no validated model is loaded. Returns
+    ``PREDICTED`` only to signal that the gates are open -- the caller
+    (``ml.inference``) then runs the model and fills in ``label`` /
+    ``confidence`` / embedding. Either way the result stays ``shadow_mode`` and
+    never affects score or feedback until clinical approval.
     """
     if not model_version:
         raise ValueError("model_version is required")
@@ -66,4 +69,11 @@ def shadow_infer(
             features,
             "no_validated_local_model_available",
         )
-    raise RuntimeError("A validated local model adapter has not been implemented")
+    return ShadowPrediction(
+        ShadowStatus.PREDICTED,
+        model_version,
+        None,
+        0.0,
+        features,
+        None,
+    )

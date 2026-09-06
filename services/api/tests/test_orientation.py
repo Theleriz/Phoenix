@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from orientation import Quaternion, calibrated_relative_orientation, from_euler_degrees
+from app.orientation import Quaternion, calibrated_relative_orientation, from_euler_degrees
 
 
 class OrientationTests(unittest.TestCase):

@@ -17,8 +17,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.types.json import Json
 from pydantic import BaseModel, Field, field_validator
 
-from .biomechanics import BiomechanicsClient, PreprocessingUnavailable
 from .demo import demo_snapshot
+from .ml import run_shadow_inference
+from .preprocessing import preprocess_transport_events
 from .safety_rules import SafetyRulePolicy, evaluate_safety_rules
 from .security import can_view_patient, issue_token, verify_token
 from .signal_quality import evaluate_signal_quality
@@ -123,9 +124,20 @@ def gateway_token_is_valid(token: str) -> bool:
     return bool(expected) and secrets.compare_digest(token, expected)
 
 
-def biomechanics_client() -> BiomechanicsClient | None:
-    url = os.environ.get("PHOENIX_BIOMECHANICS_URL")
-    return BiomechanicsClient(url) if url else None
+def ml_force_inference_enabled() -> bool:
+    """Development-only: run preprocessing + shadow inference even when the
+    signal-quality gate is closed.
+
+    Real WT901BLE68 captures currently land LOW (no stay-still calibration hold
+    in the recording), which would otherwise skip the ML branch entirely and
+    make an end-to-end integration test impossible. When this is on, the branch
+    runs against a copy of the quality report with ``scoring_permitted`` forced
+    true and ``gate_overridden`` set; the persisted ``signal_quality`` row and
+    the response's ``signal_quality`` field still carry the real, unmodified
+    verdict. Never enable in production -- shadow predictions stay shadow-mode
+    regardless, but the gate is a safety control.
+    """
+    return os.environ.get("PHOENIX_ML_FORCE_INFERENCE") == "1"
 
 
 def current_identity(
@@ -489,70 +501,110 @@ async def ingest_imu_packet(
         )
     preprocessing: dict[str, Any] = {"status": "skipped_quality_gate"}
     preprocessing_metric_id: str | None = None
-    client = biomechanics_client()
-    if quality_report["scoring_permitted"] and client is not None:
+    shadow_prediction: dict[str, Any] | None = None
+    shadow_prediction_id: str | None = None
+    gate_open = bool(quality_report["scoring_permitted"])
+    forced = ml_force_inference_enabled() and not gate_open
+    # The persisted signal_quality row and the response keep the real verdict;
+    # only the ML branch sees this forced copy (see ml_force_inference_enabled).
+    ml_quality = (
+        {**quality_report, "scoring_permitted": True, "gate_overridden": True}
+        if forced
+        else quality_report
+    )
+    if gate_open or forced:
+        # Preprocessing now runs in-process (Stage 9: monolith, no separate
+        # biomechanics service). It is a pure resample of the session's events.
+        technical_result = preprocess_transport_events(
+            session_events, signal_quality=ml_quality
+        )
+        technical_frames = list(technical_result.frames)
+        preprocessing = {
+            "status": "completed" if technical_result.allowed else "blocked",
+            "reasons": list(technical_result.reasons),
+            "parameters": technical_result.parameters,
+            "frame_count": len(technical_frames),
+        }
+        # The raw event and its signal_quality row are already committed -- that
+        # is the contract this endpoint promises. This derived metric is
+        # additive lineage in its own transaction: if it fails, surface that in
+        # the response rather than 500-ing (which would invite a retry that the
+        # 0015 dedup index now rejects anyway).
+        metric_id = str(uuid4())
         try:
-            technical_result = await client.preprocess(
-                events=session_events, signal_quality=quality_report
-            )
-        except PreprocessingUnavailable:
-            preprocessing = {"status": "unavailable"}
-        else:
-            preprocessing = {
-                "status": "completed" if technical_result.get("allowed") else "blocked",
-                "reasons": technical_result.get("reasons", []),
-                "parameters": technical_result.get("parameters", {}),
-                "frame_count": len(technical_result.get("frames", [])),
-            }
-            # The raw event and its signal_quality row are already committed --
-            # that is the contract this endpoint promises. This derived metric is
-            # additive lineage in its own transaction: if it fails, surface that
-            # in the response rather than 500-ing (which would invite a retry
-            # that the 0015 dedup index now rejects anyway).
-            metric_id = str(uuid4())
-            try:
-                with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
-                    cursor.execute(
-                        """INSERT INTO derived_metrics
-                           (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
-                            calibration_id, algorithm_version_id, name, value)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                        (
-                            metric_id,
-                            organization_id,
-                            attempt_id,
-                            chunk_id,
-                            calibration_id or existing_calibration_id,
-                            "algorithm-imu-preprocessing-v1",
-                            "technical_preprocessing",
-                            Json(
-                                {
-                                    "status": preprocessing["status"],
-                                    "reasons": preprocessing["reasons"],
-                                    "frame_count": preprocessing["frame_count"],
-                                    "parameters": preprocessing["parameters"],
-                                    "limitations": [
-                                        "No sensor fusion, angle estimation, rep segmentation, "
-                                        "scoring, "
-                                        "or clinical feedback."
-                                    ],
-                                }
-                            ),
+            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO derived_metrics
+                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                        calibration_id, algorithm_version_id, name, value)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        metric_id,
+                        organization_id,
+                        attempt_id,
+                        chunk_id,
+                        calibration_id or existing_calibration_id,
+                        "algorithm-imu-preprocessing-v1",
+                        "technical_preprocessing",
+                        Json(
+                            {
+                                "status": preprocessing["status"],
+                                "reasons": preprocessing["reasons"],
+                                "frame_count": preprocessing["frame_count"],
+                                "parameters": preprocessing["parameters"],
+                                "limitations": [
+                                    "No sensor fusion, angle estimation, rep segmentation, "
+                                    "scoring, "
+                                    "or clinical feedback."
+                                ],
+                            }
                         ),
-                    )
-            except psycopg.Error:
-                preprocessing["metric_persisted"] = False
-            else:
-                preprocessing_metric_id = metric_id
-                preprocessing["metric_persisted"] = True
-    elif quality_report["scoring_permitted"]:
-        preprocessing = {"status": "not_configured"}
+                    ),
+                )
+        except psycopg.Error:
+            preprocessing["metric_persisted"] = False
+        else:
+            preprocessing_metric_id = metric_id
+            preprocessing["metric_persisted"] = True
+
+        # Stage 9: shadow-mode ML interpretation. Abstains unless a validated
+        # checkpoint is present in app/ml/checkpoints/. Own transaction, never
+        # patient-visible, never affects score or feedback.
+        shadow_prediction = run_shadow_inference(technical_frames, ml_quality)
+        if forced:
+            shadow_prediction["gate_overridden"] = True
+            shadow_prediction["signal_quality_level"] = quality_report["level"]
+            shadow_prediction["signal_quality_reasons"] = list(quality_report["reasons"])
+        shadow_id = str(uuid4())
+        try:
+            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO shadow_predictions
+                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                        algorithm_version_id, prediction)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (
+                        shadow_id,
+                        organization_id,
+                        attempt_id,
+                        chunk_id,
+                        "algorithm-shadow-inference-v1",
+                        Json(shadow_prediction),
+                    ),
+                )
+        except psycopg.Error:
+            shadow_prediction["persisted"] = False
+        else:
+            shadow_prediction_id = shadow_id
+            shadow_prediction["persisted"] = True
     event = {
         "event_id": event_id,
         **payload,
         "signal_quality": quality_report,
         "preprocessing": preprocessing,
         "preprocessing_metric_id": preprocessing_metric_id,
+        "shadow_prediction": shadow_prediction,
+        "shadow_prediction_id": shadow_prediction_id,
     }
     await gateway_streams.publish(packet.session_id, event)
     return {
@@ -561,6 +613,8 @@ async def ingest_imu_packet(
         "signal_quality": quality_report,
         "preprocessing": preprocessing,
         "preprocessing_metric_id": preprocessing_metric_id,
+        "shadow_prediction": shadow_prediction,
+        "shadow_prediction_id": shadow_prediction_id,
     }
 
 

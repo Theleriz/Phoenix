@@ -6,3 +6,16 @@
 .login-form label{display:grid;gap:6px;font-size:12px;font-weight:700;color:#3e5d53}
 .login-form input{border:1px solid #d5e2db;border-radius:10px;padding:10px 12px;font-size:14px;color:#18342e}
 .login-error{color:#a3312a;font-size:12px;font-weight:600;margin:0}
+
+.back-button{margin-top:14px;border:1px solid #d8e4dc;background:#fff;color:#3e6558;border-radius:11px;min-height:38px;padding:0 14px;font-size:12px;font-weight:800;display:inline-flex;align-items:center;gap:7px}
+.back-button:hover{background:#f0f5ef}
+.back-button svg{transform:scaleX(-1)}
+.sensor-saved{display:block;font-size:9px;color:#9aa8a1;margin-top:2px;letter-spacing:.02em}
+.sensor-remembered-note{font-size:11px;line-height:1.5;color:#5c7a6f;background:#eef5ea;border-radius:12px;padding:10px 12px;margin:12px 0 0}
+.exercise-video{margin-top:18px}
+.exercise-video-frame{position:relative;width:100%;aspect-ratio:16/10;border-radius:20px;background:linear-gradient(150deg,#79b39a,#cde0b9);color:#12362c;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;box-shadow:0 14px 32px #1b4f4226}
+.exercise-video-frame span{font-size:12px;font-weight:700;color:#1b4f42cc;letter-spacing:.02em}
+.reps-counter{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;background:#e8f2e4;border-radius:18px;padding:18px 16px;margin-top:14px}
+.reps-counter span{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#4a6b5f}
+.reps-counter strong{font-family:'Playfair Display',Georgia,serif;font-size:52px;line-height:1;color:#204137;letter-spacing:-.05em}
+.reps-counter small{font-size:12px;color:#6f8a80;font-weight:700}
