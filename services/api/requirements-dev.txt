@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Runs the executable test suites (tests/test_http_contract.py and, when
+# PHOENIX_TEST_DATABASE_URL is set, the DB-backed integration paths).
+httpx>=0.27
+ruff==0.12.11

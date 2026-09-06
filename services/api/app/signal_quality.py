@@ -18,7 +18,14 @@ class SignalQualityLevel(StrEnum):
 
 REQUIRED_ROLES = frozenset({"thigh", "shank", "foot"})
 MIN_CALIBRATION_SECONDS = 3.0
-MIN_SAMPLE_RATE_HZ = 15.0
+# Confirmed WT901BLE68 hardware (2026-09-05 live capture, see
+# docs/imu/current-script-audit.md) streams at ~10-12 Hz per sensor on its
+# 10 Hz firmware setting. The previous 15 Hz floor would mark every real
+# session LOW regardless of actual signal quality; 8 Hz leaves margin below
+# the observed minimum (~10 Hz) for normal jitter without masking a genuinely
+# degraded stream. Still an engineering default pending device/clinical
+# validation.
+MIN_SAMPLE_RATE_HZ = 8.0
 MAX_SYNC_SKEW_MS = 100.0
 MAX_GAP_SECONDS = 1.0
 CLIPPING_RAW_LIMIT = 32_700

@@ -35,13 +35,15 @@ class BiomechanicsClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        # urlopen raises HTTPError for any non-2xx (and URLError / TimeoutError
+        # for transport failures), so a successful return is already a 2xx.
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                if not 200 <= response.status < 300:
-                    raise PreprocessingUnavailable(f"Biomechanics returned HTTP {response.status}")
                 payload = json.loads(response.read())
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
             raise PreprocessingUnavailable("Biomechanics service is unavailable") from error
+        except json.JSONDecodeError as error:
+            raise PreprocessingUnavailable("Biomechanics returned invalid JSON") from error
         if not isinstance(payload, dict):
             raise PreprocessingUnavailable("Biomechanics returned an invalid response")
         return payload

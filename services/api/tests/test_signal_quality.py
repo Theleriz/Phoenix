@@ -35,6 +35,23 @@ class SignalQualityTests(unittest.TestCase):
         self.assertEqual(report.level, SignalQualityLevel.HIGH)
         self.assertEqual(report.reasons, ())
 
+    def test_confirmed_hardware_10hz_stream_is_not_downgraded_by_sample_rate(self) -> None:
+        """WT901BLE68 on its 10 Hz firmware setting must not trip the sample-rate gate.
+
+        Real capture on 2026-09-05 measured ~10-12 Hz per sensor
+        (docs/imu/current-script-audit.md); MIN_SAMPLE_RATE_HZ must stay at or
+        below that observed minimum.
+        """
+        started = datetime(2026, 1, 1, tzinfo=UTC)
+        events = [
+            event(role, started + timedelta(milliseconds=100 * index), index)
+            for role in ("thigh", "shank", "foot")
+            for index in range(31)
+        ]
+        report = evaluate_signal_quality(events)
+        self.assertNotIn("insufficient_sample_rate", report.reasons)
+        self.assertEqual(report.level, SignalQualityLevel.HIGH)
+
     def test_marks_missing_sensor_invalid(self) -> None:
         started = datetime(2026, 1, 1, tzinfo=UTC)
         report = evaluate_signal_quality([event("thigh", started, 0)])
