@@ -31,7 +31,8 @@ compose --env-file .env -f infra/docker-compose.yml --profile llm up --build`.
 [аудит IMU](docs/imu/current-script-audit.md),
 [synthetic replay](docs/imu/synthetic-replay.md) и
 [protocol engine](docs/architecture/protocol-engine.md),
-[gateway transport](docs/imu/gateway-transport.md).
+[gateway transport](docs/imu/gateway-transport.md) и
+[клиентское BLE-подключение](docs/architecture/client-side-sensor-connectivity.md).
 
 ## Локальные проверки
 
