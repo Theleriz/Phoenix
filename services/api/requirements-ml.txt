@@ -1,0 +1,9 @@
+# Optional: enables the local LIMU-BERT shadow-inference path
+# (services/api/app/ml/). Without this the API runs fine and inference
+# abstains. Install with:  pip install -r services/api/requirements-ml.txt
+#
+# CPU-only torch. Pick the wheel index for your platform if needed:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+
+torch>=2.2,<3

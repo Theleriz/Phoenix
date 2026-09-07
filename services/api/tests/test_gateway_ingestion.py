@@ -23,8 +23,12 @@ class GatewayIngestionTests(unittest.TestCase):
         self.assertIn("evaluate_signal_quality", self.api_source)
         self.assertIn("INSERT INTO signal_quality", self.api_source)
         self.assertIn("INSERT INTO calibrations", self.api_source)
-        self.assertIn("await client.preprocess", self.api_source)
+        self.assertIn("preprocess_transport_events(", self.api_source)
         self.assertIn("INSERT INTO derived_metrics", self.api_source)
+        self.assertIn("run_shadow_inference(", self.api_source)
+        self.assertIn("INSERT INTO shadow_predictions", self.api_source)
+        self.assertIn("count_repetitions(", self.api_source)
+        self.assertIn('"repetition_count"', self.api_source)
         self.assertIn('"/api/v1/rehab-sessions/{session_id}/signal-quality"', self.api_source)
         self.assertIn("signal_quality_not_available", self.api_source)
         self.assertLess(
@@ -61,3 +65,36 @@ class GatewayIngestionTests(unittest.TestCase):
     def test_preprocessing_metric_failure_does_not_sink_the_raw_event(self) -> None:
         self.assertIn("except psycopg.Error:", self.api_source)
         self.assertIn('preprocessing["metric_persisted"] = False', self.api_source)
+
+    def test_dev_hardware_session_endpoint_is_flag_gated(self) -> None:
+        self.assertIn('"/api/v1/dev/hardware-session"', self.api_source)
+        self.assertIn("dev_hardware_session_enabled()", self.api_source)
+        self.assertIn('PHOENIX_DEV_HARDWARE_SESSION") == "1"', self.api_source)
+        # 404 (not 403) when the flag is off, so the route is indistinguishable
+        # from a missing one in production.
+        gate = self.api_source.index("def open_dev_hardware_session(")
+        body = self.api_source[gate : gate + 600]
+        self.assertIn("status_code=404", body)
+        self.assertIn("require_gateway_authorization(authorization)", body)
+
+    def test_websocket_echoes_back_the_negotiated_subprotocol(self) -> None:
+        # A client offering Sec-WebSocket-Protocol values (browsers must use
+        # this, not `?token=`, to keep a bearer secret out of logs/history)
+        # requires the server to echo one back on accept(), or browsers abort
+        # the connection even after a 101 handshake -- confirmed against a
+        # real browser client, not just this source check.
+        self.assertIn("subprotocol: str | None = None", self.api_source)
+        self.assertIn("await client.accept(subprotocol=subprotocol)", self.api_source)
+        self.assertIn("negotiated_protocol = requested_protocol.split", self.api_source)
+        self.assertIn("subprotocol=negotiated_protocol", self.api_source)
+
+    def test_ingest_response_type_matches_its_nested_dict_body(self) -> None:
+        # The response includes nested dicts (signal_quality, preprocessing) and
+        # a nullable string (preprocessing_metric_id) -- a `dict[str, str]`
+        # return annotation makes FastAPI's response validation 500 on every
+        # successful ingest (caught by a live end-to-end run, not by the
+        # source-string tests in this file).
+        start = self.api_source.index("async def ingest_imu_packet(")
+        signature_end = self.api_source.index(":", self.api_source.index(") ->", start))
+        signature = self.api_source[start:signature_end]
+        self.assertIn("-> dict[str, object]", signature)

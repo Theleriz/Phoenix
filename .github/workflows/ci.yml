@@ -26,3 +26,23 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Validate Compose file
         run: docker compose --env-file .env.example -f infra/docker-compose.yml config --quiet
+
+  frontend-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check and build patient-web
+        run: npm run build --workspace=apps/patient-web
+      - name: Type-check and build clinician-web
+        run: npm run build --workspace=apps/clinician-web
+      - name: Test packages/ui
+        run: npm test --workspace=packages/ui
+      - name: Test patient-web
+        run: npm test --workspace=apps/patient-web
+      - name: Test clinician-web
+        run: npm test --workspace=apps/clinician-web

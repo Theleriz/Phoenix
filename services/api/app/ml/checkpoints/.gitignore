@@ -1,0 +1,5 @@
+# The trained checkpoint and its filled-in meta are not committed.
+*
+!.gitignore
+!README.md
+!model_meta.example.json

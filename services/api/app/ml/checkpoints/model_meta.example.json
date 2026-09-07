@@ -1,0 +1,20 @@
+{
+  "model_version": "limu-bert-base-v1-<dataset-or-yourtag>",
+  "feature_versions": ["imu_transport_preprocessing", "model_input_tsc_9ch_v1", "limu_bert_base_v1_perssensor6"],
+  "framework": "limu_bert",
+  "window_samples": 120,
+  "rate_hz": 20.0,
+  "channels": ["ax", "ay", "az", "gx", "gy", "gz", "ori_roll", "ori_pitch", "ori_yaw"],
+  "sensor_order": ["thigh", "shank", "foot"],
+  "input_layout": "per_sensor_limu6",
+  "normalization": { "kind": "limu" },
+  "extra": {
+    "feature_num": 6,
+    "hidden": 72,
+    "hidden_ff": 144,
+    "n_layers": 4,
+    "n_heads": 4,
+    "emb_norm": true,
+    "note": "LIMU-BERT base_v1. The encoder runs once per sensor on the 6 accel+gyro channels; the 3 embeddings are mean-pooled over time and concatenated. Orientation channels (6:9) are NOT fed to LIMU-BERT (upstream slot 6:9 is magnetometer) - they go to the deterministic branch. window_samples must match the checkpoint's seq_len (120 for pretrain_base_*_20_120). If the checkpoint's state_dict keys do not match the vendored encoder, set env LIMU_BERT_SRC to an upstream checkout."
+  }
+}

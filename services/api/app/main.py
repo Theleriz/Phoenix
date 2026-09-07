@@ -17,8 +17,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.types.json import Json
 from pydantic import BaseModel, Field, field_validator
 
-from .biomechanics import BiomechanicsClient, PreprocessingUnavailable
 from .demo import demo_snapshot
+from .ml import run_shadow_inference
+from .preprocessing import preprocess_transport_events
+from .reps import count_repetitions
 from .safety_rules import SafetyRulePolicy, evaluate_safety_rules
 from .security import can_view_patient, issue_token, verify_token
 from .signal_quality import evaluate_signal_quality
@@ -39,8 +41,14 @@ class GatewayStreams:
     def __init__(self) -> None:
         self._clients: dict[str, set[WebSocket]] = {}
 
-    async def connect(self, session_id: str, client: WebSocket) -> None:
-        await client.accept()
+    async def connect(
+        self, session_id: str, client: WebSocket, *, subprotocol: str | None = None
+    ) -> None:
+        # Per the WebSocket spec, a client that offers Sec-WebSocket-Protocol
+        # values requires the server to echo back one of them, or browsers
+        # abort the connection even after a 101 handshake. `accept()` sends no
+        # such header unless told to.
+        await client.accept(subprotocol=subprotocol)
         self._clients.setdefault(session_id, set()).add(client)
 
     def disconnect(self, session_id: str, client: WebSocket) -> None:
@@ -117,9 +125,34 @@ def gateway_token_is_valid(token: str) -> bool:
     return bool(expected) and secrets.compare_digest(token, expected)
 
 
-def biomechanics_client() -> BiomechanicsClient | None:
-    url = os.environ.get("PHOENIX_BIOMECHANICS_URL")
-    return BiomechanicsClient(url) if url else None
+def ml_force_inference_enabled() -> bool:
+    """Development-only: run preprocessing + shadow inference even when the
+    signal-quality gate is closed.
+
+    Real WT901BLE68 captures currently land LOW (no stay-still calibration hold
+    in the recording), which would otherwise skip the ML branch entirely and
+    make an end-to-end integration test impossible. When this is on, the branch
+    runs against a copy of the quality report with ``scoring_permitted`` forced
+    true and ``gate_overridden`` set; the persisted ``signal_quality`` row and
+    the response's ``signal_quality`` field still carry the real, unmodified
+    verdict. Never enable in production -- shadow predictions stay shadow-mode
+    regardless, but the gate is a safety control.
+    """
+    return os.environ.get("PHOENIX_ML_FORCE_INFERENCE") == "1"
+
+
+DEV_HARDWARE_ORG = "org-demo"
+DEV_HARDWARE_EPISODE = "episode-demo"
+DEV_HARDWARE_PRESCRIPTION = "prescription-heel-slide-demo-v1"
+DEV_HARDWARE_DEVICES = ("ble-thigh", "ble-shank", "ble-foot")
+
+
+def dev_hardware_session_enabled() -> bool:
+    """Development-only: let patient-web (``?hw=1``) open a hardware gateway
+    session bound to the seeded demo episode without a linked-patient login, so
+    real Web Bluetooth sensors can be streamed and rep-counted end to end.
+    Never enable in production."""
+    return os.environ.get("PHOENIX_DEV_HARDWARE_SESSION") == "1"
 
 
 def current_identity(
@@ -335,7 +368,7 @@ def require_gateway_authorization(authorization: str | None) -> None:
 async def ingest_imu_packet(
     packet: GatewayIMUPacket,
     authorization: Annotated[str | None, Header()] = None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     """Persist one raw event, then publish it to local WebSocket listeners.
 
     202, not 200: the guarantee is that the raw event is durably stored. The
@@ -356,9 +389,11 @@ async def ingest_imu_packet(
     session_events: list[dict[str, Any]]
     with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT rs.organization_id, ea.id, rs.episode_id, rs.calibration_id
+            """SELECT rs.organization_id, ea.id, rs.episode_id, rs.calibration_id,
+                      (ep.configuration ->> 'repetitions')::int
                FROM rehab_sessions rs
                JOIN exercise_attempts ea ON ea.rehab_session_id = rs.id
+               LEFT JOIN exercise_prescriptions ep ON ep.id = ea.exercise_prescription_id
                WHERE rs.id = %s AND rs.source_kind = %s AND ea.ended_at IS NULL
                ORDER BY ea.started_at DESC LIMIT 1""",
             (packet.session_id, packet.origin),
@@ -366,7 +401,7 @@ async def ingest_imu_packet(
         session = cursor.fetchone()
         if session is None:
             raise HTTPException(status_code=422, detail="Unknown or incompatible gateway session")
-        organization_id, attempt_id, episode_id, existing_calibration_id = session
+        organization_id, attempt_id, episode_id, existing_calibration_id, target_reps = session
         cursor.execute(
             """SELECT id FROM sensor_devices
                WHERE organization_id = %s AND device_identifier = %s""",
@@ -433,6 +468,16 @@ async def ingest_imu_packet(
         )
         session_events = [row[0] for row in cursor.fetchall()]
         quality_report = evaluate_signal_quality(session_events).as_dict()
+        # Rep counting needs the *recent* tail so the counter keeps advancing on
+        # a long stream, where session_events (earliest 6000) would freeze.
+        # 1200 events ~= 400 frames/sensor ~= 20 s at 20 Hz -- enough for a few
+        # reps, small enough to keep the per-packet cost low.
+        cursor.execute(
+            """SELECT payload FROM gateway_packet_events
+               WHERE rehab_session_id = %s ORDER BY received_at DESC, id DESC LIMIT 1200""",
+            (packet.session_id,),
+        )
+        recent_events = [row[0] for row in reversed(cursor.fetchall())]
         calibration_id: str | None = None
         if (
             quality_report["level"] == "HIGH"
@@ -483,70 +528,160 @@ async def ingest_imu_packet(
         )
     preprocessing: dict[str, Any] = {"status": "skipped_quality_gate"}
     preprocessing_metric_id: str | None = None
-    client = biomechanics_client()
-    if quality_report["scoring_permitted"] and client is not None:
+    shadow_prediction: dict[str, Any] | None = None
+    shadow_prediction_id: str | None = None
+    repetitions: dict[str, Any] | None = None
+    gate_open = bool(quality_report["scoring_permitted"])
+    forced = ml_force_inference_enabled() and not gate_open
+    # The persisted signal_quality row and the response keep the real verdict;
+    # only the ML branch sees this forced copy (see ml_force_inference_enabled).
+    ml_quality = (
+        {**quality_report, "scoring_permitted": True, "gate_overridden": True}
+        if forced
+        else quality_report
+    )
+    if gate_open or forced:
+        # Preprocessing now runs in-process (Stage 9: monolith, no separate
+        # biomechanics service). It is a pure resample of the session's events.
+        technical_result = preprocess_transport_events(
+            session_events, signal_quality=ml_quality
+        )
+        technical_frames = list(technical_result.frames)
+        preprocessing = {
+            "status": "completed" if technical_result.allowed else "blocked",
+            "reasons": list(technical_result.reasons),
+            "parameters": technical_result.parameters,
+            "frame_count": len(technical_frames),
+        }
+        # The raw event and its signal_quality row are already committed -- that
+        # is the contract this endpoint promises. This derived metric is
+        # additive lineage in its own transaction: if it fails, surface that in
+        # the response rather than 500-ing (which would invite a retry that the
+        # 0015 dedup index now rejects anyway).
+        metric_id = str(uuid4())
         try:
-            technical_result = await client.preprocess(
-                events=session_events, signal_quality=quality_report
-            )
-        except PreprocessingUnavailable:
-            preprocessing = {"status": "unavailable"}
-        else:
-            preprocessing = {
-                "status": "completed" if technical_result.get("allowed") else "blocked",
-                "reasons": technical_result.get("reasons", []),
-                "parameters": technical_result.get("parameters", {}),
-                "frame_count": len(technical_result.get("frames", [])),
-            }
-            # The raw event and its signal_quality row are already committed --
-            # that is the contract this endpoint promises. This derived metric is
-            # additive lineage in its own transaction: if it fails, surface that
-            # in the response rather than 500-ing (which would invite a retry
-            # that the 0015 dedup index now rejects anyway).
-            metric_id = str(uuid4())
-            try:
-                with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
-                    cursor.execute(
-                        """INSERT INTO derived_metrics
-                           (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
-                            calibration_id, algorithm_version_id, name, value)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                        (
-                            metric_id,
-                            organization_id,
-                            attempt_id,
-                            chunk_id,
-                            calibration_id or existing_calibration_id,
-                            "algorithm-imu-preprocessing-v1",
-                            "technical_preprocessing",
-                            Json(
-                                {
-                                    "status": preprocessing["status"],
-                                    "reasons": preprocessing["reasons"],
-                                    "frame_count": preprocessing["frame_count"],
-                                    "parameters": preprocessing["parameters"],
-                                    "limitations": [
-                                        "No sensor fusion, angle estimation, rep segmentation, "
-                                        "scoring, "
-                                        "or clinical feedback."
-                                    ],
-                                }
-                            ),
+            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO derived_metrics
+                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                        calibration_id, algorithm_version_id, name, value)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        metric_id,
+                        organization_id,
+                        attempt_id,
+                        chunk_id,
+                        calibration_id or existing_calibration_id,
+                        "algorithm-imu-preprocessing-v1",
+                        "technical_preprocessing",
+                        Json(
+                            {
+                                "status": preprocessing["status"],
+                                "reasons": preprocessing["reasons"],
+                                "frame_count": preprocessing["frame_count"],
+                                "parameters": preprocessing["parameters"],
+                                "limitations": [
+                                    "No sensor fusion, angle estimation, rep segmentation, "
+                                    "scoring, "
+                                    "or clinical feedback."
+                                ],
+                            }
                         ),
-                    )
-            except psycopg.Error:
-                preprocessing["metric_persisted"] = False
-            else:
-                preprocessing_metric_id = metric_id
-                preprocessing["metric_persisted"] = True
-    elif quality_report["scoring_permitted"]:
-        preprocessing = {"status": "not_configured"}
+                    ),
+                )
+        except psycopg.Error:
+            preprocessing["metric_persisted"] = False
+        else:
+            preprocessing_metric_id = metric_id
+            preprocessing["metric_persisted"] = True
+
+        # Stage 9: shadow-mode ML interpretation. Abstains unless a validated
+        # checkpoint is present in app/ml/checkpoints/. Own transaction, never
+        # patient-visible, never affects score or feedback.
+        shadow_prediction = run_shadow_inference(technical_frames, ml_quality)
+        if forced:
+            shadow_prediction["gate_overridden"] = True
+            shadow_prediction["signal_quality_level"] = quality_report["level"]
+            shadow_prediction["signal_quality_reasons"] = list(quality_report["reasons"])
+        shadow_id = str(uuid4())
+        try:
+            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO shadow_predictions
+                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                        algorithm_version_id, prediction)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (
+                        shadow_id,
+                        organization_id,
+                        attempt_id,
+                        chunk_id,
+                        "algorithm-shadow-inference-v1",
+                        Json(shadow_prediction),
+                    ),
+                )
+        except psycopg.Error:
+            shadow_prediction["persisted"] = False
+        else:
+            shadow_prediction_id = shadow_id
+            shadow_prediction["persisted"] = True
+
+        # Deterministic repetition segmentation on the recent window. This is
+        # the primary rep signal the patient app counts from; the shadow model's
+        # rep boundaries (when a checkpoint exists) are compared, not used.
+        # Reuse the frames we already computed when the session still fits in the
+        # recent window (avoids a second resample per packet on short sessions).
+        if len(session_events) <= len(recent_events):
+            rep_frames = technical_frames
+        else:
+            rep_frames = list(
+                preprocess_transport_events(
+                    recent_events,
+                    signal_quality={"scoring_permitted": True},
+                    filter_window_samples=1,
+                ).frames
+            )
+        rep_report = count_repetitions(rep_frames)
+        repetitions = {
+            "window_count": rep_report.count,
+            "target": target_reps,
+            "just_completed": rep_report.just_completed,
+            "last_completed_at": rep_report.last_completed_at,
+            "amplitude_degrees": rep_report.amplitude_degrees,
+            "proxy": rep_report.proxy,
+            "reason": rep_report.reason,
+        }
+        try:
+            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO derived_metrics
+                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                        calibration_id, algorithm_version_id, name, value)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        str(uuid4()),
+                        organization_id,
+                        attempt_id,
+                        chunk_id,
+                        calibration_id or existing_calibration_id,
+                        "algorithm-repetition-count-v1",
+                        "repetition_count",
+                        Json(repetitions),
+                    ),
+                )
+        except psycopg.Error:
+            repetitions["persisted"] = False
+        else:
+            repetitions["persisted"] = True
     event = {
         "event_id": event_id,
         **payload,
         "signal_quality": quality_report,
         "preprocessing": preprocessing,
         "preprocessing_metric_id": preprocessing_metric_id,
+        "shadow_prediction": shadow_prediction,
+        "shadow_prediction_id": shadow_prediction_id,
+        "repetitions": repetitions,
     }
     await gateway_streams.publish(packet.session_id, event)
     return {
@@ -555,6 +690,9 @@ async def ingest_imu_packet(
         "signal_quality": quality_report,
         "preprocessing": preprocessing,
         "preprocessing_metric_id": preprocessing_metric_id,
+        "shadow_prediction": shadow_prediction,
+        "shadow_prediction_id": shadow_prediction_id,
+        "repetitions": repetitions,
     }
 
 
@@ -582,12 +720,177 @@ async def stream_gateway_packets(websocket: WebSocket, session_id: str) -> None:
     if not gateway_token_is_valid(_websocket_gateway_token(websocket)):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-    await gateway_streams.connect(session_id, websocket)
+    requested_protocol = websocket.headers.get("sec-websocket-protocol", "")
+    negotiated_protocol = requested_protocol.split(",")[0].strip() if requested_protocol else None
+    await gateway_streams.connect(session_id, websocket, subprotocol=negotiated_protocol)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         gateway_streams.disconnect(session_id, websocket)
+
+
+class ExerciseAttemptRequest(BaseModel):
+    source_kind: str = Field(pattern="^(synthetic|hardware)$")
+    exercise_prescription_id: str
+
+
+@app.post("/api/v1/episodes/{episode_id}/exercise-attempts", status_code=201, tags=["gateway"])
+def start_exercise_attempt(
+    episode_id: str, request: ExerciseAttemptRequest, identity: Identity
+) -> dict[str, str]:
+    """Open the (rehab_session, exercise_attempt) pair gateway ingestion requires.
+
+    ``POST /api/v1/gateway/imu-packets`` only accepts packets for an
+    already-open pair matched by ``session_id`` -- this is where that pair is
+    created, so a real (or synthetic) sensor stream has something to ingest
+    against.
+    """
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT patient.user_id FROM episodes_of_care episode
+               JOIN patients patient ON patient.id = episode.patient_id
+               WHERE episode.id = %s AND episode.organization_id = %s""",
+            (episode_id, organization_id),
+        )
+        episode = cursor.fetchone()
+        if episode is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=episode[0],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Episode not found")
+        cursor.execute(
+            """SELECT 1 FROM exercise_prescriptions ep
+               JOIN protocol_assignments pa ON pa.id = ep.protocol_assignment_id
+               WHERE ep.id = %s AND ep.organization_id = %s AND pa.episode_id = %s""",
+            (request.exercise_prescription_id, organization_id, episode_id),
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(
+                status_code=422, detail="Unknown exercise prescription for this episode"
+            )
+        session_id = str(uuid4())
+        attempt_id = str(uuid4())
+        cursor.execute(
+            """INSERT INTO rehab_sessions
+               (id, organization_id, episode_id, source_kind, started_at)
+               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+            (session_id, organization_id, episode_id, request.source_kind),
+        )
+        cursor.execute(
+            """INSERT INTO exercise_attempts
+               (id, organization_id, rehab_session_id, exercise_prescription_id, started_at)
+               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+            (attempt_id, organization_id, session_id, request.exercise_prescription_id),
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="exercise_attempt_started",
+            subject_type="exercise_attempt",
+            subject_id=attempt_id,
+        )
+    return {"session_id": session_id, "exercise_attempt_id": attempt_id}
+
+
+@app.post("/api/v1/exercise-attempts/{attempt_id}/complete", tags=["gateway"])
+def complete_exercise_attempt(attempt_id: str, identity: Identity) -> dict[str, object]:
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT patient.user_id FROM exercise_attempts attempt
+               JOIN rehab_sessions session ON session.id = attempt.rehab_session_id
+               JOIN episodes_of_care episode ON episode.id = session.episode_id
+               JOIN patients patient ON patient.id = episode.patient_id
+               WHERE attempt.id = %s AND attempt.organization_id = %s""",
+            (attempt_id, organization_id),
+        )
+        row = cursor.fetchone()
+        if row is None or not can_view_patient(
+            roles=frozenset(identity["roles"]),
+            patient_user_id=row[0],
+            user_id=str(identity["user_id"]),
+        ):
+            raise HTTPException(status_code=404, detail="Exercise attempt not found")
+        cursor.execute(
+            """UPDATE exercise_attempts SET ended_at = CURRENT_TIMESTAMP
+               WHERE id = %s AND ended_at IS NULL""",
+            (attempt_id,),
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="exercise_attempt_completed",
+            subject_type="exercise_attempt",
+            subject_id=attempt_id,
+        )
+    return {"exercise_attempt_id": attempt_id, "status": "completed"}
+
+
+class SensorDeviceRequest(BaseModel):
+    device_identifier: str = Field(min_length=1, max_length=200)
+    model: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/api/v1/sensor-devices", tags=["gateway"])
+def register_sensor_device(request: SensorDeviceRequest, identity: Identity) -> dict[str, str]:
+    """Idempotent upsert so a patient's own browser can register its own sensors."""
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO sensor_devices (id, organization_id, device_identifier, model)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (organization_id, device_identifier)
+               DO UPDATE SET model = EXCLUDED.model
+               RETURNING id""",
+            (str(uuid4()), organization_id, request.device_identifier, request.model),
+        )
+        device_id = cursor.fetchone()[0]
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="sensor_device_registered",
+            subject_type="sensor_device",
+            subject_id=device_id,
+        )
+    return {"id": device_id}
+
+
+@app.post("/api/v1/dev/hardware-session", tags=["gateway"])
+def open_dev_hardware_session(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    """Dev-only: create a hardware (rehab_session, exercise_attempt) pair bound
+    to the demo episode + the ble-<role> device ids patient-web uses. 404 unless
+    PHOENIX_DEV_HARDWARE_SESSION=1. Auth is the shared gateway token."""
+    if not dev_hardware_session_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    require_gateway_authorization(authorization)
+    session_id = str(uuid4())
+    attempt_id = str(uuid4())
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO rehab_sessions
+               (id, organization_id, episode_id, source_kind, started_at)
+               VALUES (%s, %s, %s, 'hardware', CURRENT_TIMESTAMP)""",
+            (session_id, DEV_HARDWARE_ORG, DEV_HARDWARE_EPISODE),
+        )
+        cursor.execute(
+            """INSERT INTO exercise_attempts
+               (id, organization_id, rehab_session_id, exercise_prescription_id, started_at)
+               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+            (attempt_id, DEV_HARDWARE_ORG, session_id, DEV_HARDWARE_PRESCRIPTION),
+        )
+        for identifier in DEV_HARDWARE_DEVICES:
+            cursor.execute(
+                """INSERT INTO sensor_devices (id, organization_id, device_identifier, model)
+                   VALUES (%s, %s, %s, 'WT901BLE68')
+                   ON CONFLICT (organization_id, device_identifier) DO NOTHING""",
+                (str(uuid4()), DEV_HARDWARE_ORG, identifier),
+            )
+    return {"session_id": session_id, "exercise_attempt_id": attempt_id}
 
 
 @app.get("/api/v1/rehab-sessions/{session_id}/signal-quality", tags=["signal-quality"])
@@ -653,6 +956,91 @@ def get_current_user(identity: Identity) -> dict[str, object]:
         "organization_id": identity["organization_id"],
         "roles": sorted(identity["roles"]),
     }
+
+
+PATIENT_LIST_ROLES = frozenset({"clinician", "rehabilitologist", "organization_admin"})
+
+
+def _active_episode_id(cursor: Any, *, patient_id: str, organization_id: str) -> str | None:
+    """Most recent episode for the patient.
+
+    ``episodes_of_care.status`` is free text, not a constrained enum (see
+    migration 0002), and the seeded demo episode uses the marker
+    ``development_fixture`` rather than ``active`` -- so this deliberately
+    does not filter on a specific status value, only recency.
+    """
+    cursor.execute(
+        """SELECT id FROM episodes_of_care
+           WHERE patient_id = %s AND organization_id = %s
+           ORDER BY created_at DESC LIMIT 1""",
+        (patient_id, organization_id),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+@app.get("/api/v1/patients/me", tags=["patients"])
+def get_current_patient(identity: Identity) -> dict[str, object]:
+    """Self-lookup for a logged-in patient -- the only way to learn one's own patient_id."""
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT id, display_name, post_op_day FROM patients
+               WHERE user_id = %s AND organization_id = %s""",
+            (str(identity["user_id"]), organization_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No patient record for this user")
+        active_episode_id = _active_episode_id(
+            cursor, patient_id=row[0], organization_id=organization_id
+        )
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="patient_self_view",
+            subject_type="patient",
+            subject_id=row[0],
+        )
+    return {
+        "id": row[0],
+        "display_name": row[1],
+        "post_op_day": row[2],
+        "active_episode_id": active_episode_id,
+    }
+
+
+@app.get("/api/v1/patients", tags=["patients"])
+def list_patients(identity: Identity) -> list[dict[str, object]]:
+    """Org-scoped patient list for a clinician's dashboard queue."""
+    require_roles(identity, PATIENT_LIST_ROLES)
+    organization_id = str(identity["organization_id"])
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT id, display_name, post_op_day FROM patients
+               WHERE organization_id = %s ORDER BY display_name""",
+            (organization_id,),
+        )
+        rows = cursor.fetchall()
+        results = [
+            {
+                "id": row[0],
+                "display_name": row[1],
+                "post_op_day": row[2],
+                "active_episode_id": _active_episode_id(
+                    cursor, patient_id=row[0], organization_id=organization_id
+                ),
+            }
+            for row in rows
+        ]
+        _insert_audit(
+            cursor,
+            identity=identity,
+            event_type="patients_list_view",
+            subject_type="organization",
+            subject_id=organization_id,
+        )
+    return results
 
 
 @app.get("/api/v1/patients/{patient_id}", tags=["patients"])
