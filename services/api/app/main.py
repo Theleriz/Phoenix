@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from .demo import demo_snapshot
 from .ml import run_shadow_inference
 from .preprocessing import preprocess_transport_events
+from .reps import count_repetitions
 from .safety_rules import SafetyRulePolicy, evaluate_safety_rules
 from .security import can_view_patient, issue_token, verify_token
 from .signal_quality import evaluate_signal_quality
@@ -138,6 +139,20 @@ def ml_force_inference_enabled() -> bool:
     regardless, but the gate is a safety control.
     """
     return os.environ.get("PHOENIX_ML_FORCE_INFERENCE") == "1"
+
+
+DEV_HARDWARE_ORG = "org-demo"
+DEV_HARDWARE_EPISODE = "episode-demo"
+DEV_HARDWARE_PRESCRIPTION = "prescription-heel-slide-demo-v1"
+DEV_HARDWARE_DEVICES = ("ble-thigh", "ble-shank", "ble-foot")
+
+
+def dev_hardware_session_enabled() -> bool:
+    """Development-only: let patient-web (``?hw=1``) open a hardware gateway
+    session bound to the seeded demo episode without a linked-patient login, so
+    real Web Bluetooth sensors can be streamed and rep-counted end to end.
+    Never enable in production."""
+    return os.environ.get("PHOENIX_DEV_HARDWARE_SESSION") == "1"
 
 
 def current_identity(
@@ -374,9 +389,11 @@ async def ingest_imu_packet(
     session_events: list[dict[str, Any]]
     with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT rs.organization_id, ea.id, rs.episode_id, rs.calibration_id
+            """SELECT rs.organization_id, ea.id, rs.episode_id, rs.calibration_id,
+                      (ep.configuration ->> 'repetitions')::int
                FROM rehab_sessions rs
                JOIN exercise_attempts ea ON ea.rehab_session_id = rs.id
+               LEFT JOIN exercise_prescriptions ep ON ep.id = ea.exercise_prescription_id
                WHERE rs.id = %s AND rs.source_kind = %s AND ea.ended_at IS NULL
                ORDER BY ea.started_at DESC LIMIT 1""",
             (packet.session_id, packet.origin),
@@ -384,7 +401,7 @@ async def ingest_imu_packet(
         session = cursor.fetchone()
         if session is None:
             raise HTTPException(status_code=422, detail="Unknown or incompatible gateway session")
-        organization_id, attempt_id, episode_id, existing_calibration_id = session
+        organization_id, attempt_id, episode_id, existing_calibration_id, target_reps = session
         cursor.execute(
             """SELECT id FROM sensor_devices
                WHERE organization_id = %s AND device_identifier = %s""",
@@ -451,6 +468,16 @@ async def ingest_imu_packet(
         )
         session_events = [row[0] for row in cursor.fetchall()]
         quality_report = evaluate_signal_quality(session_events).as_dict()
+        # Rep counting needs the *recent* tail so the counter keeps advancing on
+        # a long stream, where session_events (earliest 6000) would freeze.
+        # 1200 events ~= 400 frames/sensor ~= 20 s at 20 Hz -- enough for a few
+        # reps, small enough to keep the per-packet cost low.
+        cursor.execute(
+            """SELECT payload FROM gateway_packet_events
+               WHERE rehab_session_id = %s ORDER BY received_at DESC, id DESC LIMIT 1200""",
+            (packet.session_id,),
+        )
+        recent_events = [row[0] for row in reversed(cursor.fetchall())]
         calibration_id: str | None = None
         if (
             quality_report["level"] == "HIGH"
@@ -503,6 +530,7 @@ async def ingest_imu_packet(
     preprocessing_metric_id: str | None = None
     shadow_prediction: dict[str, Any] | None = None
     shadow_prediction_id: str | None = None
+    repetitions: dict[str, Any] | None = None
     gate_open = bool(quality_report["scoring_permitted"])
     forced = ml_force_inference_enabled() and not gate_open
     # The persisted signal_quality row and the response keep the real verdict;
@@ -597,6 +625,54 @@ async def ingest_imu_packet(
         else:
             shadow_prediction_id = shadow_id
             shadow_prediction["persisted"] = True
+
+        # Deterministic repetition segmentation on the recent window. This is
+        # the primary rep signal the patient app counts from; the shadow model's
+        # rep boundaries (when a checkpoint exists) are compared, not used.
+        # Reuse the frames we already computed when the session still fits in the
+        # recent window (avoids a second resample per packet on short sessions).
+        if len(session_events) <= len(recent_events):
+            rep_frames = technical_frames
+        else:
+            rep_frames = list(
+                preprocess_transport_events(
+                    recent_events,
+                    signal_quality={"scoring_permitted": True},
+                    filter_window_samples=1,
+                ).frames
+            )
+        rep_report = count_repetitions(rep_frames)
+        repetitions = {
+            "window_count": rep_report.count,
+            "target": target_reps,
+            "just_completed": rep_report.just_completed,
+            "last_completed_at": rep_report.last_completed_at,
+            "amplitude_degrees": rep_report.amplitude_degrees,
+            "proxy": rep_report.proxy,
+            "reason": rep_report.reason,
+        }
+        try:
+            with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO derived_metrics
+                       (id, organization_id, exercise_attempt_id, raw_imu_chunk_id,
+                        calibration_id, algorithm_version_id, name, value)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        str(uuid4()),
+                        organization_id,
+                        attempt_id,
+                        chunk_id,
+                        calibration_id or existing_calibration_id,
+                        "algorithm-repetition-count-v1",
+                        "repetition_count",
+                        Json(repetitions),
+                    ),
+                )
+        except psycopg.Error:
+            repetitions["persisted"] = False
+        else:
+            repetitions["persisted"] = True
     event = {
         "event_id": event_id,
         **payload,
@@ -605,6 +681,7 @@ async def ingest_imu_packet(
         "preprocessing_metric_id": preprocessing_metric_id,
         "shadow_prediction": shadow_prediction,
         "shadow_prediction_id": shadow_prediction_id,
+        "repetitions": repetitions,
     }
     await gateway_streams.publish(packet.session_id, event)
     return {
@@ -615,6 +692,7 @@ async def ingest_imu_packet(
         "preprocessing_metric_id": preprocessing_metric_id,
         "shadow_prediction": shadow_prediction,
         "shadow_prediction_id": shadow_prediction_id,
+        "repetitions": repetitions,
     }
 
 
@@ -778,6 +856,41 @@ def register_sensor_device(request: SensorDeviceRequest, identity: Identity) -> 
             subject_id=device_id,
         )
     return {"id": device_id}
+
+
+@app.post("/api/v1/dev/hardware-session", tags=["gateway"])
+def open_dev_hardware_session(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    """Dev-only: create a hardware (rehab_session, exercise_attempt) pair bound
+    to the demo episode + the ble-<role> device ids patient-web uses. 404 unless
+    PHOENIX_DEV_HARDWARE_SESSION=1. Auth is the shared gateway token."""
+    if not dev_hardware_session_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    require_gateway_authorization(authorization)
+    session_id = str(uuid4())
+    attempt_id = str(uuid4())
+    with psycopg.connect(database_url()) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO rehab_sessions
+               (id, organization_id, episode_id, source_kind, started_at)
+               VALUES (%s, %s, %s, 'hardware', CURRENT_TIMESTAMP)""",
+            (session_id, DEV_HARDWARE_ORG, DEV_HARDWARE_EPISODE),
+        )
+        cursor.execute(
+            """INSERT INTO exercise_attempts
+               (id, organization_id, rehab_session_id, exercise_prescription_id, started_at)
+               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+            (attempt_id, DEV_HARDWARE_ORG, session_id, DEV_HARDWARE_PRESCRIPTION),
+        )
+        for identifier in DEV_HARDWARE_DEVICES:
+            cursor.execute(
+                """INSERT INTO sensor_devices (id, organization_id, device_identifier, model)
+                   VALUES (%s, %s, %s, 'WT901BLE68')
+                   ON CONFLICT (organization_id, device_identifier) DO NOTHING""",
+                (str(uuid4()), DEV_HARDWARE_ORG, identifier),
+            )
+    return {"session_id": session_id, "exercise_attempt_id": attempt_id}
 
 
 @app.get("/api/v1/rehab-sessions/{session_id}/signal-quality", tags=["signal-quality"])

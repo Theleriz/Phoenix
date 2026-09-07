@@ -54,6 +54,7 @@ services:
       # Dev-only: run preprocessing + shadow inference even when the
       # signal-quality gate is closed (real captures land LOW). Default 0.
       PHOENIX_ML_FORCE_INFERENCE: ${PHOENIX_ML_FORCE_INFERENCE:-0}
+      PHOENIX_DEV_HARDWARE_SESSION: ${PHOENIX_DEV_HARDWARE_SESSION:-0}
     ports:
       - "8000:8000"
     depends_on:

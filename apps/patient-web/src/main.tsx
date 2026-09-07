@@ -27,9 +27,9 @@ type SensorRole = "thigh" | "shank" | "foot";
 type SensorUiStatus = "idle" | BleConnectionStatus;
 
 const copy = {
-  ru: { language: "Язык", greeting: "Добрый день", today: "План на сегодня", start: "Начать занятие", continue: "Продолжить", next: "Далее", calibrate: "Начать калибровку", pause: "Пауза", resume: "Продолжить занятие", finish: "Завершить", setup: "Подключите датчики", calibration: "Калибровка", exercise: "Текущее упражнение", result: "Занятие завершено", check: "Как вы себя чувствуете?", progress: "Прогресс", messages: "Сообщения", save: "Сохранить ответы", saved: "Спасибо, ответы сохранены.", plan: "План", synthetic: "Режим демонстрации · synthetic replay", notice: "Это synthetic replay для разработки. Данные не являются измерениями пациента и не используются для score, feedback или клинических решений.", notCalculated: "Не рассчитано", waiting: "Ожидает", connected: "Готов", ready: "Датчики готовы", placement: "Разместите датчики как показано на схеме", stayStill: "Пожалуйста, сохраняйте неподвижность", calibrationDone: "Калибровка завершена", cue: "Выполняйте движение в комфортном темпе", before: "Боль до занятия", after: "Боль после занятия", difficulty: "Насколько сложным было занятие?", symptoms: "Новые симптомы", no: "Нет", yes: "Да", easy: "Легко", normal: "Нормально", hard: "Сложно", exerciseName: "Скольжение пяткой", duration: "~ 8 минут", reps: "10 повторений", pod: "день после операции", completed: "Выполнено занятий", adherence: "Выполнение плана", emptyMessages: "Новых сообщений пока нет", back: "К плану", stop: "Завершить занятие?", stopNote: "Вы сможете сообщить о самочувствии на следующем шаге.", confirmStop: "Да, завершить", cancel: "Вернуться к занятию", loginTitle: "Вход", email: "Email", password: "Пароль", organization: "Организация", loginSubmit: "Войти", loginError: "Не удалось войти: проверьте данные", logout: "Выйти", demoDataLabel: "Демо-данные · нет привязанного пациента", reconnecting: "Переподключение — статус мог устареть", signalConfidence: "Достоверность сигнала", registerSensor: "Подключить", sensorRegistered: "Зарегистрирован", safetyReasons: "Причины", bleRequesting: "Выбор устройства…", bleConnecting: "Подключение…", bleConnected: "Подключено", bleDisconnected: "Отключено", bleError: "Ошибка подключения", bleUnsupported: "Bluetooth недоступен в этом браузере (нужен Chrome/Edge, HTTPS или localhost)", bleRetry: "Повторить", goBack: "Назад", resetSensors: "Сбросить конфигурацию датчиков", savedSensorLabel: "Сохранённый датчик", noSavedSensor: "Датчик ещё не сохранён", sensorsRemembered: "Адреса датчиков сохранены на этом устройстве — не нужно каждый раз вспоминать, где какой", targetReps: "Целевое количество повторений", repsUnit: "повторений", videoExample: "Видео-пример", videoComingSoon: "Видео-пример скоро появится", readyToStart: "Всё готово к упражнению", repsRemaining: "Осталось повторений", repDone: "Повторение выполнено", exerciseDoneHint: "Все повторения выполнены" },
-  kz: { language: "Тіл", greeting: "Қайырлы күн", today: "Бүгінгі жоспар", start: "Жаттығуды бастау", continue: "Жалғастыру", next: "Келесі", calibrate: "Калибрлеуді бастау", pause: "Кідірту", resume: "Жаттығуды жалғастыру", finish: "Аяқтау", setup: "Датчиктерді қосыңыз", calibration: "Калибрлеу", exercise: "Ағымдағы жаттығу", result: "Жаттығу аяқталды", check: "Өзіңізді қалай сезінесіз?", progress: "Прогресс", messages: "Хабарламалар", save: "Жауаптарды сақтау", saved: "Рақмет, жауаптар сақталды.", plan: "Жоспар", synthetic: "Демо режимі · synthetic replay", notice: "Бұл әзірлеуге арналған synthetic replay. Деректер пациент өлшемі емес және score, alert не клиникалық шешімдерде қолданылмайды.", notCalculated: "Есептелмеді", waiting: "Күтуде", connected: "Дайын", ready: "Датчиктер дайын", placement: "Датчиктерді сызбада көрсетілгендей орналастырыңыз", stayStill: "Қозғалмай тұрыңыз", calibrationDone: "Калибрлеу аяқталды", cue: "Қозғалысты ыңғайлы қарқынмен орындаңыз", before: "Жаттығуға дейінгі ауырсыну", after: "Жаттығудан кейінгі ауырсыну", difficulty: "Жаттығу қаншалықты қиын болды?", symptoms: "Жаңа симптомдар", no: "Жоқ", yes: "Иә", easy: "Оңай", normal: "Қалыпты", hard: "Қиын", exerciseName: "Өкшені сырғыту", duration: "~ 8 минут", reps: "10 қайталау", pod: "операциядан кейінгі күн", completed: "Орындалған жаттығулар", adherence: "Жоспарды орындау", emptyMessages: "Әзірге жаңа хабарламалар жоқ", back: "Жоспарға", stop: "Жаттығуды аяқтау керек пе?", stopNote: "Келесі қадамда өзіңізді қалай сезінетініңізді хабарлай аласыз.", confirmStop: "Иә, аяқтау", cancel: "Жаттығуға оралу", loginTitle: "Кіру", email: "Email", password: "Құпия сөз", organization: "Ұйым", loginSubmit: "Кіру", loginError: "Кіру мүмкін болмады: деректерді тексеріңіз", logout: "Шығу", demoDataLabel: "Демо деректер · пациент байланыстырылмаған", reconnecting: "Қайта қосылуда — күй ескіруі мүмкін", signalConfidence: "Сигнал сенімділігі", registerSensor: "Қосу", sensorRegistered: "Тіркелген", safetyReasons: "Себептер", bleRequesting: "Құрылғы таңдау…", bleConnecting: "Қосылуда…", bleConnected: "Қосылды", bleDisconnected: "Ажыратылды", bleError: "Қосылу қатесі", bleUnsupported: "Bluetooth бұл браузерде қолжетімсіз (Chrome/Edge, HTTPS немесе localhost қажет)", bleRetry: "Қайталау", goBack: "Артқа", resetSensors: "Датчиктер конфигурациясын тастау", savedSensorLabel: "Сақталған датчик", noSavedSensor: "Датчик әлі сақталмаған", sensorsRemembered: "Датчик адрестері осы құрылғыда сақталды — қайсысы қайда екенін еске сақтаудың қажеті жоқ", targetReps: "Мақсатты қайталау саны", repsUnit: "қайталау", videoExample: "Бейне мысал", videoComingSoon: "Бейне мысал жақында қосылады", readyToStart: "Жаттығуға дайын", repsRemaining: "Қалған қайталау", repDone: "Қайталау орындалды", exerciseDoneHint: "Барлық қайталау орындалды" },
-  en: { language: "Language", greeting: "Good day", today: "Today’s plan", start: "Start session", continue: "Continue", next: "Next", calibrate: "Start calibration", pause: "Pause", resume: "Resume session", finish: "Finish", setup: "Connect your sensors", calibration: "Calibration", exercise: "Current exercise", result: "Session complete", check: "How are you feeling?", progress: "Progress", messages: "Messages", save: "Save answers", saved: "Thank you, responses are saved.", plan: "Plan", synthetic: "Demo mode · synthetic replay", notice: "This is a synthetic replay for development. Data are not patient measurements and are not used for scoring, alerts, or clinical decisions.", notCalculated: "Not calculated", waiting: "Waiting", connected: "Ready", ready: "Sensors ready", placement: "Place the sensors as shown in the guide", stayStill: "Please stay still", calibrationDone: "Calibration complete", cue: "Move at a comfortable pace", before: "Pain before session", after: "Pain after session", difficulty: "How difficult was the session?", symptoms: "New symptoms", no: "No", yes: "Yes", easy: "Easy", normal: "Normal", hard: "Hard", exerciseName: "Heel slide", duration: "~ 8 min", reps: "10 repetitions", pod: "day after surgery", completed: "Sessions completed", adherence: "Plan adherence", emptyMessages: "No new messages yet", back: "Back to plan", stop: "Finish this session?", stopNote: "You can tell us how you feel in the next step.", confirmStop: "Yes, finish", cancel: "Back to exercise", loginTitle: "Sign in", email: "Email", password: "Password", organization: "Organization", loginSubmit: "Sign in", loginError: "Could not sign in: check your details", logout: "Log out", demoDataLabel: "Demo data · no linked patient", reconnecting: "Reconnecting — status may be out of date", signalConfidence: "Signal confidence", registerSensor: "Connect", sensorRegistered: "Registered", safetyReasons: "Reasons", bleRequesting: "Choosing device…", bleConnecting: "Connecting…", bleConnected: "Connected", bleDisconnected: "Disconnected", bleError: "Connection error", bleUnsupported: "Bluetooth is unavailable in this browser (needs Chrome/Edge, HTTPS or localhost)", bleRetry: "Retry", goBack: "Back", resetSensors: "Reset sensor configuration", savedSensorLabel: "Saved sensor", noSavedSensor: "No sensor saved yet", sensorsRemembered: "Sensor addresses are stored on this device — no need to remember which one goes where", targetReps: "Target repetitions", repsUnit: "repetitions", videoExample: "Video example", videoComingSoon: "Video example coming soon", readyToStart: "Ready to start", repsRemaining: "Repetitions left", repDone: "Repetition done", exerciseDoneHint: "All repetitions done" },
+  ru: { language: "Язык", greeting: "Добрый день", today: "План на сегодня", start: "Начать занятие", continue: "Продолжить", next: "Далее", calibrate: "Начать калибровку", pause: "Пауза", resume: "Продолжить занятие", finish: "Завершить", setup: "Подключите датчики", calibration: "Калибровка", exercise: "Текущее упражнение", result: "Занятие завершено", check: "Как вы себя чувствуете?", progress: "Прогресс", messages: "Сообщения", save: "Сохранить ответы", saved: "Спасибо, ответы сохранены.", plan: "План", synthetic: "Режим демонстрации · synthetic replay", notice: "Это synthetic replay для разработки. Данные не являются измерениями пациента и не используются для score, feedback или клинических решений.", notCalculated: "Не рассчитано", waiting: "Ожидает", connected: "Готов", ready: "Датчики готовы", placement: "Разместите датчики как показано на схеме", stayStill: "Пожалуйста, сохраняйте неподвижность", calibrationDone: "Калибровка завершена", cue: "Выполняйте движение в комфортном темпе", before: "Боль до занятия", after: "Боль после занятия", difficulty: "Насколько сложным было занятие?", symptoms: "Новые симптомы", no: "Нет", yes: "Да", easy: "Легко", normal: "Нормально", hard: "Сложно", exerciseName: "Скольжение пяткой", duration: "~ 8 минут", reps: "10 повторений", pod: "день после операции", completed: "Выполнено занятий", adherence: "Выполнение плана", emptyMessages: "Новых сообщений пока нет", back: "К плану", stop: "Завершить занятие?", stopNote: "Вы сможете сообщить о самочувствии на следующем шаге.", confirmStop: "Да, завершить", cancel: "Вернуться к занятию", loginTitle: "Вход", email: "Email", password: "Пароль", organization: "Организация", loginSubmit: "Войти", loginError: "Не удалось войти: проверьте данные", logout: "Выйти", demoDataLabel: "Демо-данные · нет привязанного пациента", reconnecting: "Переподключение — статус мог устареть", signalConfidence: "Достоверность сигнала", registerSensor: "Подключить", sensorRegistered: "Зарегистрирован", safetyReasons: "Причины", bleRequesting: "Выбор устройства…", bleConnecting: "Подключение…", bleConnected: "Подключено", bleDisconnected: "Отключено", bleError: "Ошибка подключения", bleUnsupported: "Bluetooth недоступен в этом браузере (нужен Chrome/Edge, HTTPS или localhost)", bleRetry: "Повторить", goBack: "Назад", resetSensors: "Сбросить конфигурацию датчиков", savedSensorLabel: "Сохранённый датчик", noSavedSensor: "Датчик ещё не сохранён", sensorsRemembered: "Адреса датчиков сохранены на этом устройстве — не нужно каждый раз вспоминать, где какой", targetReps: "Целевое количество повторений", repsUnit: "повторений", videoExample: "Видео-пример", videoComingSoon: "Видео-пример скоро появится", readyToStart: "Всё готово к упражнению", repsRemaining: "Осталось повторений", repDone: "Повторение выполнено", exerciseDoneHint: "Все повторения выполнены", autoReps: "Повторения считаются автоматически по датчикам", manualRepFallback: "Отметить повторение вручную", skipCalibrationDev: "Пропустить калибровку (dev)" },
+  kz: { language: "Тіл", greeting: "Қайырлы күн", today: "Бүгінгі жоспар", start: "Жаттығуды бастау", continue: "Жалғастыру", next: "Келесі", calibrate: "Калибрлеуді бастау", pause: "Кідірту", resume: "Жаттығуды жалғастыру", finish: "Аяқтау", setup: "Датчиктерді қосыңыз", calibration: "Калибрлеу", exercise: "Ағымдағы жаттығу", result: "Жаттығу аяқталды", check: "Өзіңізді қалай сезінесіз?", progress: "Прогресс", messages: "Хабарламалар", save: "Жауаптарды сақтау", saved: "Рақмет, жауаптар сақталды.", plan: "Жоспар", synthetic: "Демо режимі · synthetic replay", notice: "Бұл әзірлеуге арналған synthetic replay. Деректер пациент өлшемі емес және score, alert не клиникалық шешімдерде қолданылмайды.", notCalculated: "Есептелмеді", waiting: "Күтуде", connected: "Дайын", ready: "Датчиктер дайын", placement: "Датчиктерді сызбада көрсетілгендей орналастырыңыз", stayStill: "Қозғалмай тұрыңыз", calibrationDone: "Калибрлеу аяқталды", cue: "Қозғалысты ыңғайлы қарқынмен орындаңыз", before: "Жаттығуға дейінгі ауырсыну", after: "Жаттығудан кейінгі ауырсыну", difficulty: "Жаттығу қаншалықты қиын болды?", symptoms: "Жаңа симптомдар", no: "Жоқ", yes: "Иә", easy: "Оңай", normal: "Қалыпты", hard: "Қиын", exerciseName: "Өкшені сырғыту", duration: "~ 8 минут", reps: "10 қайталау", pod: "операциядан кейінгі күн", completed: "Орындалған жаттығулар", adherence: "Жоспарды орындау", emptyMessages: "Әзірге жаңа хабарламалар жоқ", back: "Жоспарға", stop: "Жаттығуды аяқтау керек пе?", stopNote: "Келесі қадамда өзіңізді қалай сезінетініңізді хабарлай аласыз.", confirmStop: "Иә, аяқтау", cancel: "Жаттығуға оралу", loginTitle: "Кіру", email: "Email", password: "Құпия сөз", organization: "Ұйым", loginSubmit: "Кіру", loginError: "Кіру мүмкін болмады: деректерді тексеріңіз", logout: "Шығу", demoDataLabel: "Демо деректер · пациент байланыстырылмаған", reconnecting: "Қайта қосылуда — күй ескіруі мүмкін", signalConfidence: "Сигнал сенімділігі", registerSensor: "Қосу", sensorRegistered: "Тіркелген", safetyReasons: "Себептер", bleRequesting: "Құрылғы таңдау…", bleConnecting: "Қосылуда…", bleConnected: "Қосылды", bleDisconnected: "Ажыратылды", bleError: "Қосылу қатесі", bleUnsupported: "Bluetooth бұл браузерде қолжетімсіз (Chrome/Edge, HTTPS немесе localhost қажет)", bleRetry: "Қайталау", goBack: "Артқа", resetSensors: "Датчиктер конфигурациясын тастау", savedSensorLabel: "Сақталған датчик", noSavedSensor: "Датчик әлі сақталмаған", sensorsRemembered: "Датчик адрестері осы құрылғыда сақталды — қайсысы қайда екенін еске сақтаудың қажеті жоқ", targetReps: "Мақсатты қайталау саны", repsUnit: "қайталау", videoExample: "Бейне мысал", videoComingSoon: "Бейне мысал жақында қосылады", readyToStart: "Жаттығуға дайын", repsRemaining: "Қалған қайталау", repDone: "Қайталау орындалды", exerciseDoneHint: "Барлық қайталау орындалды", autoReps: "Қайталаулар датчиктер бойынша автоматты түрде саналады", manualRepFallback: "Қайталауды қолмен белгілеу", skipCalibrationDev: "Калибрлеуді өткізіп жіберу (dev)" },
+  en: { language: "Language", greeting: "Good day", today: "Today’s plan", start: "Start session", continue: "Continue", next: "Next", calibrate: "Start calibration", pause: "Pause", resume: "Resume session", finish: "Finish", setup: "Connect your sensors", calibration: "Calibration", exercise: "Current exercise", result: "Session complete", check: "How are you feeling?", progress: "Progress", messages: "Messages", save: "Save answers", saved: "Thank you, responses are saved.", plan: "Plan", synthetic: "Demo mode · synthetic replay", notice: "This is a synthetic replay for development. Data are not patient measurements and are not used for scoring, alerts, or clinical decisions.", notCalculated: "Not calculated", waiting: "Waiting", connected: "Ready", ready: "Sensors ready", placement: "Place the sensors as shown in the guide", stayStill: "Please stay still", calibrationDone: "Calibration complete", cue: "Move at a comfortable pace", before: "Pain before session", after: "Pain after session", difficulty: "How difficult was the session?", symptoms: "New symptoms", no: "No", yes: "Yes", easy: "Easy", normal: "Normal", hard: "Hard", exerciseName: "Heel slide", duration: "~ 8 min", reps: "10 repetitions", pod: "day after surgery", completed: "Sessions completed", adherence: "Plan adherence", emptyMessages: "No new messages yet", back: "Back to plan", stop: "Finish this session?", stopNote: "You can tell us how you feel in the next step.", confirmStop: "Yes, finish", cancel: "Back to exercise", loginTitle: "Sign in", email: "Email", password: "Password", organization: "Organization", loginSubmit: "Sign in", loginError: "Could not sign in: check your details", logout: "Log out", demoDataLabel: "Demo data · no linked patient", reconnecting: "Reconnecting — status may be out of date", signalConfidence: "Signal confidence", registerSensor: "Connect", sensorRegistered: "Registered", safetyReasons: "Reasons", bleRequesting: "Choosing device…", bleConnecting: "Connecting…", bleConnected: "Connected", bleDisconnected: "Disconnected", bleError: "Connection error", bleUnsupported: "Bluetooth is unavailable in this browser (needs Chrome/Edge, HTTPS or localhost)", bleRetry: "Retry", goBack: "Back", resetSensors: "Reset sensor configuration", savedSensorLabel: "Saved sensor", noSavedSensor: "No sensor saved yet", sensorsRemembered: "Sensor addresses are stored on this device — no need to remember which one goes where", targetReps: "Target repetitions", repsUnit: "repetitions", videoExample: "Video example", videoComingSoon: "Video example coming soon", readyToStart: "Ready to start", repsRemaining: "Repetitions left", repDone: "Repetition done", exerciseDoneHint: "All repetitions done", autoReps: "Repetitions are counted automatically from the sensors", manualRepFallback: "Mark repetition manually", skipCalibrationDev: "Skip calibration (dev)" },
 };
 
 const SENSOR_ROLES: { role: "thigh" | "shank" | "foot"; label: string }[] = [
@@ -231,6 +231,24 @@ function App() {
     }
   }, [patient, currentExercise]);
 
+  // Dev mode: open patient-web with ?hw=1 to stream real BLE sensors even
+  // without a linked-patient login. The API opens a hardware gateway session
+  // bound to the demo episode (needs PHOENIX_DEV_HARDWARE_SESSION=1).
+  const hwDev =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("hw") === "1";
+
+  const startDevHardwareSession = useCallback(async () => {
+    try {
+      const { session_id, exercise_attempt_id } = await api.gateway.startDevHardwareSession();
+      setSessionId(session_id);
+      setAttemptId(exercise_attempt_id);
+    } catch {
+      setSessionId(null);
+      setAttemptId(null);
+    }
+  }, []);
+
   // Deliberately NOT created on entering Setup: signal_quality evaluates the
   // *earliest* events of the session as "the" static calibration window
   // (services/api/app/signal_quality.py). Sensors are paired one at a time
@@ -346,13 +364,49 @@ function App() {
   const [safetyNote, setSafetyNote] = useState<string | null>(null);
   const [resultSignal, setResultSignal] = useState<string | null>(null);
 
-  const stream = useGatewayStream(sessionId, GATEWAY_TOKEN, {
+  // Repetitions completed in the current attempt. The backend emits a
+  // `just_completed` edge per detected rep (deterministic segmentation); the
+  // screen owns the cumulative counter and de-dups on `last_completed_at`.
+  const [repsDone, setRepsDone] = useState(0);
+  const [repSignalSeen, setRepSignalSeen] = useState(false);
+  const [repPulse, setRepPulse] = useState(false);
+  const lastRepAtRef = useRef<number | null>(null);
+  const targetRepsRef = useRef(targetReps);
+  targetRepsRef.current = targetReps;
+
+  // A dev/demo stream to watch when there is no real hardware session: open
+  // the patient app with ?stream=<rehab_session_id> and it subscribes to that
+  // session's gateway feed (drive it with scripts/stream_capture_loop.py).
+  const demoStreamSession =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("stream")
+      : null;
+  const streamSessionId = sessionId ?? demoStreamSession;
+
+  const stream = useGatewayStream(streamSessionId, GATEWAY_TOKEN, {
     onEvent: (event) => {
       setLiveEventSeen(true);
       const quality = event.signal_quality;
       setCalibrationReasons(quality.reasons);
       if (quality.level === "HIGH") {
         setCalibration(Math.min(100, Math.round((quality.calibration_duration_seconds / 5) * 100)));
+      }
+      // The backend reports the timestamp of the latest detected rep in its
+      // recent window; that value only moves forward. Count a rep whenever it
+      // advances. The first event just sets the baseline (reps completed before
+      // the patient was watching are not counted).
+      const rep = event.repetitions;
+      if (rep && rep.last_completed_at != null) {
+        if (lastRepAtRef.current === null) {
+          lastRepAtRef.current = rep.last_completed_at;
+          setRepSignalSeen(true);
+        } else if (rep.last_completed_at > lastRepAtRef.current) {
+          lastRepAtRef.current = rep.last_completed_at;
+          setRepSignalSeen(true);
+          setRepsDone((n) => Math.min(targetRepsRef.current, n + 1));
+          setRepPulse(true);
+          window.setTimeout(() => setRepPulse(false), 600);
+        }
       }
     },
   });
@@ -365,12 +419,12 @@ function App() {
     }
   }, [view, calibration, liveEventSeen]);
 
-  // Repetitions completed in the current exercise attempt. No automatic rep
-  // segmentation exists yet, so the patient taps once per repetition and the
-  // screen counts down how many are left.
-  const [repsDone, setRepsDone] = useState(0);
   useEffect(() => {
-    if (view === "setup") setRepsDone(0);
+    if (view === "setup") {
+      setRepsDone(0);
+      setRepSignalSeen(false);
+      lastRepAtRef.current = null;
+    }
   }, [view]);
   const repsRemaining = Math.max(0, targetReps - repsDone);
 
@@ -567,6 +621,7 @@ function App() {
           full
           onClick={async () => {
             if (canUseRealSession && !sessionId) await startRealSession();
+            else if (hwDev && !sessionId) await startDevHardwareSession();
             go("calibration");
           }}
         >
@@ -605,6 +660,11 @@ function App() {
           {calibration === 100 ? t.continue : t.calibrate}
           <Icon name="arrow" />
         </Button>
+        {hwDev && calibration < 100 && (
+          <Button variant="text-button" full onClick={() => go("exercise")}>
+            {t.skipCalibrationDev}
+          </Button>
+        )}
       </>
     );
   } else if (view === "exercise") {
@@ -627,16 +687,30 @@ function App() {
             <span>{t.videoComingSoon}</span>
           </div>
         </div>
-        <div className="reps-counter">
+        <div className={repPulse ? "reps-counter pulse" : "reps-counter"}>
           <span>{repsRemaining === 0 ? t.exerciseDoneHint : t.repsRemaining}</span>
           <strong>{repsRemaining}</strong>
           <small>
             {repsDone} / {targetReps}
           </small>
         </div>
-        <Button full onClick={() => setRepsDone((n) => Math.min(targetReps, n + 1))} disabled={repsRemaining === 0}>
-          {t.repDone}
-        </Button>
+        {repSignalSeen ? (
+          <div className="demo-cue">
+            <span>
+              <Icon name="check" size={17} />
+            </span>
+            {t.autoReps}
+          </div>
+        ) : (
+          <Button
+            variant="secondary"
+            full
+            onClick={() => setRepsDone((n) => Math.min(targetReps, n + 1))}
+            disabled={repsRemaining === 0}
+          >
+            {t.manualRepFallback}
+          </Button>
+        )}
         <div className="demo-cue">
           <span>
             <Icon name="heart" size={17} />

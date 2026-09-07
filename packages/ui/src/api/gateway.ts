@@ -16,6 +16,13 @@ export function createGatewayApi(client: ApiClient) {
         `/api/v1/episodes/${encodeURIComponent(episodeId)}/exercise-attempts`,
         { method: "POST", body: JSON.stringify(request) }
       ),
+    /**
+     * Dev-only: open a hardware gateway session bound to the demo episode
+     * without a linked-patient login. The API returns 404 unless
+     * PHOENIX_DEV_HARDWARE_SESSION=1. Used by patient-web's `?hw=1` mode.
+     */
+    startDevHardwareSession: () =>
+      client.request<ExerciseAttemptResponse>("/api/v1/dev/hardware-session", { method: "POST" }),
     completeExerciseAttempt: (attemptId: string) =>
       client.request<{ exercise_attempt_id: string; status: string }>(
         `/api/v1/exercise-attempts/${encodeURIComponent(attemptId)}/complete`,

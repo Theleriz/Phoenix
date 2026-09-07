@@ -50,12 +50,30 @@ export interface PreprocessingResult {
   metric_persisted?: boolean;
 }
 
+/**
+ * Deterministic repetition signal. `window_count` is reps detected in the
+ * recent analysis window (it can plateau/reset as the window slides); the
+ * patient app keeps its own cumulative counter and increments it on each
+ * `just_completed` with a new `last_completed_at`.
+ */
+export interface RepetitionSignal {
+  window_count: number;
+  target: number | null;
+  just_completed: boolean;
+  last_completed_at: number | null;
+  amplitude_degrees: number;
+  proxy: string;
+  reason: string | null;
+  persisted?: boolean;
+}
+
 export interface GatewayIngestResponse {
   event_id: string;
   raw_imu_chunk_id: string;
   signal_quality: SignalQualityReport;
   preprocessing: PreprocessingResult;
   preprocessing_metric_id: string | null;
+  repetitions: RepetitionSignal | null;
 }
 
 /** One WebSocket stream message: the ingested packet plus its derived context. */
@@ -64,6 +82,7 @@ export type GatewayStreamEvent = GatewayIMUPacket & {
   signal_quality: SignalQualityReport;
   preprocessing: PreprocessingResult;
   preprocessing_metric_id: string | null;
+  repetitions: RepetitionSignal | null;
 };
 
 export interface SignalQualityResponse {

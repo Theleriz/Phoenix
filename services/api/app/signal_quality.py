@@ -101,8 +101,13 @@ def evaluate_signal_quality(events: list[dict[str, Any]]) -> SignalQualityReport
     timed: dict[str, list[tuple[datetime, dict[str, Any]]]] = {}
     try:
         for role, role_events in by_role.items():
+            # key= so a tie on the timestamp never falls through to comparing
+            # the event dicts (that raises TypeError -> misreported below as
+            # "invalid_gateway_timestamp"). Two packets can share a host
+            # timestamp whenever they land in the same clock tick.
             timed[role] = sorted(
-                (_timestamp(event["timestamp_gateway"]), event) for event in role_events
+                ((_timestamp(event["timestamp_gateway"]), event) for event in role_events),
+                key=lambda pair: pair[0],
             )
     except (KeyError, TypeError, ValueError):
         return SignalQualityReport(

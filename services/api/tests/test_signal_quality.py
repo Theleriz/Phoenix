@@ -75,6 +75,20 @@ class SignalQualityTests(unittest.TestCase):
         self.assertEqual(report.level, SignalQualityLevel.INVALID)
         self.assertIn("missing_sensor_roles:foot,shank", report.reasons)
 
+    def test_duplicate_timestamps_do_not_crash_the_timestamp_parse(self) -> None:
+        """Two packets for one role sharing a host timestamp must not be
+        misreported as ``invalid_gateway_timestamp`` (a tie used to fall through
+        to comparing the event dicts, raising TypeError)."""
+        started = datetime(2026, 1, 1, tzinfo=UTC)
+        events = []
+        for role in ("thigh", "shank", "foot"):
+            for index in range(61):
+                # every 5th sample duplicates the previous timestamp
+                moment = started + timedelta(milliseconds=50 * (index - index % 5))
+                events.append(event(role, moment, index))
+        report = evaluate_signal_quality(events)
+        self.assertNotIn("invalid_gateway_timestamp", report.reasons)
+
     def test_short_calibration_and_clipping_prevent_valid_signal(self) -> None:
         started = datetime(2026, 1, 1, tzinfo=UTC)
         events = [

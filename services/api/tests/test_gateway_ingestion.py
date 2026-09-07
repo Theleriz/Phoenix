@@ -27,6 +27,8 @@ class GatewayIngestionTests(unittest.TestCase):
         self.assertIn("INSERT INTO derived_metrics", self.api_source)
         self.assertIn("run_shadow_inference(", self.api_source)
         self.assertIn("INSERT INTO shadow_predictions", self.api_source)
+        self.assertIn("count_repetitions(", self.api_source)
+        self.assertIn('"repetition_count"', self.api_source)
         self.assertIn('"/api/v1/rehab-sessions/{session_id}/signal-quality"', self.api_source)
         self.assertIn("signal_quality_not_available", self.api_source)
         self.assertLess(
@@ -63,6 +65,17 @@ class GatewayIngestionTests(unittest.TestCase):
     def test_preprocessing_metric_failure_does_not_sink_the_raw_event(self) -> None:
         self.assertIn("except psycopg.Error:", self.api_source)
         self.assertIn('preprocessing["metric_persisted"] = False', self.api_source)
+
+    def test_dev_hardware_session_endpoint_is_flag_gated(self) -> None:
+        self.assertIn('"/api/v1/dev/hardware-session"', self.api_source)
+        self.assertIn("dev_hardware_session_enabled()", self.api_source)
+        self.assertIn('PHOENIX_DEV_HARDWARE_SESSION") == "1"', self.api_source)
+        # 404 (not 403) when the flag is off, so the route is indistinguishable
+        # from a missing one in production.
+        gate = self.api_source.index("def open_dev_hardware_session(")
+        body = self.api_source[gate : gate + 600]
+        self.assertIn("status_code=404", body)
+        self.assertIn("require_gateway_authorization(authorization)", body)
 
     def test_websocket_echoes_back_the_negotiated_subprotocol(self) -> None:
         # A client offering Sec-WebSocket-Protocol values (browsers must use
